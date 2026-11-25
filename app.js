@@ -4,7 +4,7 @@
    ========================================================= */
 'use strict';
 
-const APP_VERSION = '2.4.0';
+const APP_VERSION = '2.4.1';
 const DB_NAME = 'fusayfisa';
 const DB_VERSION = 1; // نفس قاعدة البيانات السابقة حتى لا تضيع المراجع المحفوظة
 
@@ -115,8 +115,17 @@ async function hashPass(pass, salt) {
   let h = 2166136261; for (const b of data) { h ^= b; h = Math.imul(h, 16777619) >>> 0; } return 'fnv' + h.toString(16);
 }
 async function setSetting(key, value) { S.settings[key] = value; await DB.put('settings', { key, value }); }
-async function setPassword(p) { const salt = uid(); await setSetting('privateSalt', salt); await setSetting('privateHash', await hashPass(p, salt)); }
-const checkPassword = async (p) => !!S.settings.privateHash && (await hashPass(p, S.settings.privateSalt)) === S.settings.privateHash;
+async function setPassword(p) { p = digitsAscii(p.trim()); const salt = uid(); await setSetting('privateSalt', salt); await setSetting('privateHash', await hashPass(p, salt)); }
+// الأرقام العربية (١٢٣) والإنجليزية (123) تُعامل كأنها نفس الشيء: كيبورد الجوال العربي يكتب ١٢٣١ بدل 1231
+const digitsAscii = (p) => String(p).replace(/[٠-٩]/g, (d) => d.charCodeAt(0) - 0x660).replace(/[۰-۹]/g, (d) => d.charCodeAt(0) - 0x6F0);
+const digitsArabic = (p) => String(p).replace(/[0-9]/g, (d) => String.fromCharCode(0x660 + +d));
+const checkPassword = async (p) => {
+  if (!S.settings.privateHash) return false;
+  for (const c of new Set([p, p.trim(), digitsAscii(p), digitsAscii(p.trim()), digitsArabic(digitsAscii(p.trim()))])) {
+    if ((await hashPass(c, S.settings.privateSalt)) === S.settings.privateHash) return true;
+  }
+  return false;
+};
 
 /* ---------- Pinterest: يفتح صفحة النتائج فقط ---------- */
 function openPinterest() {
