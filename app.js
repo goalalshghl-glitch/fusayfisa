@@ -4,7 +4,7 @@
    ========================================================= */
 'use strict';
 
-const APP_VERSION = '2.5.0';
+const APP_VERSION = '2.6.0';
 const DB_NAME = 'fusayfisa';
 const DB_VERSION = 1; // نفس قاعدة البيانات السابقة حتى لا تضيع المراجع المحفوظة
 
@@ -154,6 +154,8 @@ async function loadAll() {
     i.pgroup = root && root.filters === 'anime' ? 'anime' : root ? 'women' : 'anime';
     if (c && c.parentId) i.ptype = c.name;
   });
+  // الصور الجاهزة القديمة كان المصدر مكتوباً في الملاحظة: صار في «•••» فقط
+  items.forEach((i) => { if (i.source?.page && (i.notes || '').startsWith('المصدر: Wikimedia Commons')) { i.notes = ''; DB.put('images', i).catch(() => {}); } });
   S.items = new Map(items.map((i) => [i.id, i]));
   S.groups = new Map(groups.map((g) => [g.id, g]));
 }
@@ -615,8 +617,7 @@ async function importPack() {
       const file = decodeURIComponent(path.split('/').slice(-2)[0]);
       const name = file.replace(/\.[^.]+$/, '').replace(/_/g, ' ');
       const page = `https://commons.wikimedia.org/wiki/File:${encodeURIComponent(file)}`;
-      const note = `المصدر: Wikimedia Commons\n${page}${license ? `\nالترخيص: ${license}` : ''}${author ? `\nالمصوّر: ${author}` : ''}`;
-      await saveFile(new File([blob], `${name}.jpg`, { type: blob.type }), name, note, g.id, { hash, packPath: path, source: { site: 'Wikimedia Commons', page, license: license || '', author: author || '' } });
+      await saveFile(new File([blob], `${name}.jpg`, { type: blob.type }), name, '', g.id, { hash, packPath: path, source: { site: 'Wikimedia Commons', page, license: license || '', author: author || '' } });
       saved++;
     } catch (err) {
       failed.push(`صورة ${i + 1}: ${err?.name === 'QuotaExceededError' ? 'المساحة ممتلئة' : err?.message === 'not-image' ? 'الملف ليس صورة' : 'تعذّر التنزيل'}`);
@@ -755,9 +756,15 @@ async function openItem(id, list) {
   const canShare = canShareFile || !!navigator.share;
   const canCopyImage = item.kind === 'image' && blob && window.ClipboardItem && navigator.clipboard?.write;
 
-  const node = el(`<div class="viewer">
-    <div class="v-top"><button class="x" type="button" data-close aria-label="رجوع">${icon('x')}</button></div>
-    <div class="v-media">${media}</div>
+  // عرض مثل Pinterest: الصورة فقط مع زرين صغيرين، وتحتها مزيد من الصور. باقي الخيارات في قائمة «•••»
+  const node = el(`<div class="viewer pin">
+    <div class="v-media">${media}
+      <button class="pv-btn pv-back" type="button" data-close aria-label="رجوع">${icon('x')}</button>
+      <button class="pv-btn pv-more" type="button" aria-label="خيارات">•••</button>
+      <button class="pv-btn pv-fav ${item.favorite ? 'on' : ''}" type="button" aria-label="مفضلة">${icon('heart')}</button>
+    </div>
+    <section class="v-similar" aria-label="مزيد من الصور"></section></div>`);
+  const panel = el(`<div class="sheet v-sheet"><div class="sheet-head"><h2>خيارات</h2><button class="x" type="button" data-close aria-label="إغلاق">${icon('x')}</button></div>
     <div class="v-panel">
       <label class="field"><input class="input name-in" name="name" value="${esc(item.name)}" maxlength="120" aria-label="اسم المرجع" placeholder="بدون اسم"></label>
       <label class="field"><textarea class="input" name="note" maxlength="2000" placeholder="اكتب ملاحظة…" aria-label="ملاحظة">${esc(noteOf(item))}</textarea></label>
@@ -770,21 +777,23 @@ async function openItem(id, list) {
       </div>
       <div class="v-groups"></div>
       <div class="v-class"></div>
-    </div>
-    <section class="v-similar" aria-label="صور مشابهة"></section></div>`);
+      ${item.source?.page ? `<p class="v-src">المصدر: <a href="${esc(item.source.page)}" target="_blank" rel="noopener">${esc(item.source.site || 'رابط')}</a>${item.source.license ? ` · ${esc(item.source.license)}` : ''}${item.source.author ? ` · ${esc(item.source.author)}` : ''}</p>` : ''}
+    </div></div>`);
+  $('.pv-more', node).onclick = () => openModal(panel);
+  $('.pv-fav', node).onclick = () => $('[data-a=fav]', panel).click();
 
   // حفظ الاسم والملاحظة تلقائياً أثناء الكتابة
-  const saved = $('.saved', node);
+  const saved = $('.saved', panel);
   const autosave = debounce(async () => {
     try {
-      await updateItem(id, { name: node.querySelector('[name=name]').value.trim() || item.name, notes: node.querySelector('[name=note]').value.trim(), description: '' });
+      await updateItem(id, { name: panel.querySelector('[name=name]').value.trim() || item.name, notes: panel.querySelector('[name=note]').value.trim(), description: '' });
       changed = true;
       saved.textContent = 'تم الحفظ تلقائياً';
     } catch (err) { toast(friendlyError(err), 'err'); }
   }, 500);
-  $$('[name=name], [name=note]', node).forEach((f) => { f.oninput = () => { saved.textContent = ''; autosave(); }; });
+  $$('[name=name], [name=note]', panel).forEach((f) => { f.oninput = () => { saved.textContent = ''; autosave(); }; });
 
-  const groupsBox = $('.v-groups', node);
+  const groupsBox = $('.v-groups', panel);
   const paintGroups = () => {
     groupsBox.innerHTML = '';
     if (!S.groups.size || isPrivate(item)) return;
@@ -804,7 +813,7 @@ async function openItem(id, list) {
   paintGroups();
 
   // القسم الخاص: تعديل القسم والأنواع يدوياً (التعديل اليدوي هو المعتمد)
-  const classBox = $('.v-class', node);
+  const classBox = $('.v-class', panel);
   const paintClass = () => {
     classBox.innerHTML = '';
     const cur = S.items.get(id);
@@ -843,20 +852,18 @@ async function openItem(id, list) {
   const paintSimilar = async () => {
     const cur = S.items.get(id);
     if (!cur || cur.kind !== 'image') return;
-    simBox.innerHTML = '<h3>صور مشابهة</h3>';
+    simBox.innerHTML = '<h3>مزيد من الصور</h3>';
     if (!cur.emb) { simBox.append(el(`<p class="muted">${AI.failed ? 'لم تُحلل هذه الصورة بعد (يحتاج اتصالاً بالإنترنت لأول مرة).' : 'جاري تحليل الصورة لإيجاد المشابه لها…'}</p>`)); return; }
     try { await aiMod(); } catch { simBox.append(el('<p class="muted">تعذّر تحميل أداة التحليل.</p>')); return; }
-    const sim = similarTo(cur);
-    if (!sim.length) { simBox.append(el('<p class="muted">لا توجد في مكتبتك صور مشابهة لهذه بعد.</p>')); return; }
+    // مثل Pinterest: الأقرب شبهاً أولاً ثم الأبعد (من نفس المساحة فقط، مرتبة حسب التشابه وليست عشوائية)
+    const sim = similarTo(cur, 60, 0);
+    if (!sim.length) { simBox.append(el('<p class="muted">لا توجد صور أخرى بعد.</p>')); return; }
     const go = (sid) => { closeModal().then(() => openItem(sid)); };
-    const very = sim.filter(([x]) => x >= SIM_HIGH).map((x) => x[1]), close = sim.filter(([x]) => x < SIM_HIGH).map((x) => x[1]);
-    simBox.innerHTML = '';
-    if (very.length) { simBox.append(el('<h3>مشابهة جداً</h3>'), gridEl(very, go)); }
-    if (close.length) { simBox.append(el(`<h3>${very.length ? 'مشابهة في النوع أو الأسلوب' : 'صور مشابهة في النوع أو الأسلوب'}</h3>`), gridEl(close, go)); }
+    simBox.append(gridEl(sim.map((x) => x[1]), go));
   };
   paintSimilar();
 
-  $('.acts', node).onclick = async (e) => {
+  $('.acts', panel).onclick = async (e) => {
     const b = e.target.closest('[data-a]');
     if (!b) return;
     const a = b.dataset.a;
@@ -866,6 +873,7 @@ async function openItem(id, list) {
       await updateItem(id, { favorite: fav, favoritedAt: fav ? Date.now() : null });
       changed = true;
       b.classList.toggle('on', fav);
+      $('.pv-fav', node).classList.toggle('on', fav);
       $('span', b).textContent = fav ? 'في المفضلة' : 'مفضلة';
       toast(fav ? 'أُضيف إلى المفضلة' : 'أُزيل من المفضلة', 'ok');
     }
@@ -901,7 +909,7 @@ async function openItem(id, list) {
       await deleteItem(id);
       changed = true;
       toast('حُذف المرجع', 'ok');
-      closeModal();
+      while (modals.length) await closeModal();
     }
   };
 
@@ -986,14 +994,14 @@ async function aiIndex() {
 const aiKick = () => setTimeout(() => aiIndex(), 300);
 
 /** أقرب الصور شبهاً لصورة معينة، من نفس المساحة فقط (العامة مع العامة، والخاصة مع الخاصة) */
-function similarTo(item, limit = 30) {
+function similarTo(item, limit = 30, min = SIM_MIN) {
   if (!item.emb || !AI.mod) return [];
   const priv = isPrivate(item);
   const out = [];
   S.items.forEach((o) => {
     if (o.id === item.id || !o.emb || isPrivate(o) !== priv) return;
     const s = AI.mod.dot(item.emb, o.emb);
-    if (s >= SIM_MIN) out.push([s, o]);
+    if (s >= min) out.push([s, o]);
   });
   return out.sort((a, b) => b[0] - a[0]).slice(0, limit);
 }
@@ -1047,7 +1055,7 @@ function cardHTML(i) {
   else top = `<span class="fileph">${icon('file')}<small>${esc(ext(i.fileName || i.name))}</small></span>`;
   const note = noteOf(i);
   return `<button class="card" type="button" data-id="${i.id}" aria-label="${esc(i.name)}">${top}
-    ${i.kind === 'image' ? '' : `<span class="name">${esc(i.name || 'بدون اسم')}</span>`}${note ? `<span class="note">${esc(note)}</span>` : ''}
+    ${i.kind === 'image' ? '' : `<span class="name">${esc(i.name || 'بدون اسم')}</span>${note ? `<span class="note">${esc(note)}</span>` : ''}`}
     ${i.favorite ? `<span class="heart">${icon('heart')}</span>` : ''}</button>`;
 }
 /** شبكة بأعمدة متوازنة تحافظ على أبعاد الصور، وتُضاف البطاقات تدريجياً */
