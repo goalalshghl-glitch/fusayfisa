@@ -4,7 +4,7 @@
    ========================================================= */
 'use strict';
 
-const APP_VERSION = '2.4.2';
+const APP_VERSION = '2.4.3';
 const DB_NAME = 'fusayfisa';
 const DB_VERSION = 1; // نفس قاعدة البيانات السابقة حتى لا تضيع المراجع المحفوظة
 
@@ -1223,7 +1223,14 @@ async function init() {
 
   // العمل دون إنترنت بعد أول زيارة
   if ('serviceWorker' in navigator && window.isSecureContext) {
-    navigator.serviceWorker.register('./sw.js', { scope: './' }).catch(() => {});
+    // عند نزول نسخة جديدة: إعادة تحميل الصفحة مرة واحدة تلقائياً حتى لا يبقى المستخدم على نسخة قديمة
+    const hadController = !!navigator.serviceWorker.controller;
+    let reloaded = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadController && !reloaded && !modals.length) { reloaded = true; location.reload(); } });
+    navigator.serviceWorker.register('./sw.js', { scope: './' }).then((r) => {
+      r.update().catch(() => {});
+      document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') r.update().catch(() => {}); });
+    }).catch(() => {});
   }
 }
 init();
