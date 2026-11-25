@@ -266,3 +266,5 @@ select.input { appearance: none; -webkit-appearance: none; }
 .v-similar:empty { display: none; }
 .v-similar h3 { font-size: 1rem; margin: 6px 0 12px; }
 .v-similar p { font-size: .9rem; }
+
+.pack-btn { display: block; margin: 4px auto 10px; color: var(--primary); font-weight: 600; }

@@ -4,7 +4,7 @@
    ========================================================= */
 'use strict';
 
-const APP_VERSION = '2.4.5';
+const APP_VERSION = '2.5.0';
 const DB_NAME = 'fusayfisa';
 const DB_VERSION = 1; // نفس قاعدة البيانات السابقة حتى لا تضيع المراجع المحفوظة
 
@@ -427,6 +427,7 @@ function openAdd(initialFiles) {
     <div class="sheet-head"><h2>إضافة مراجع</h2><button class="x" type="button" data-close aria-label="إغلاق">${icon('x')}</button></div>
     <label class="pick">${icon('upload')}<b>اختر صوراً أو ملفات</b><span>اختر عشرات أو مئات الصور مرة واحدة، أو ملف ZIP</span><input type="file" multiple name="f"></label>
     ${canFolder ? '<label class="folder-btn">أو اختر مجلداً كاملاً<input type="file" name="dir" webkitdirectory multiple></label>' : ''}
+    ${!S.priv && S.settings.packImported !== PACK_VERSION ? '<button type="button" class="link pack-btn" data-pack>أو أضف الصور الجاهزة: 243 سيارة و157 صورة عامة</button>' : ''}
     <div class="summary" hidden></div>
     <div class="chosen" hidden></div>
     <div class="opts" hidden>
@@ -441,6 +442,7 @@ function openAdd(initialFiles) {
   </form>`);
   const $n = (s) => $(s, node);
   const save = $n('[type=submit]');
+  $n('[data-pack]')?.addEventListener('click', async () => { await closeModal(); importPack(); });
 
   function paint() {
     urls.forEach(URL.revokeObjectURL); urls.length = 0;
@@ -573,6 +575,65 @@ function openAdd(initialFiles) {
   };
   openModal(node, { onClose: () => urls.forEach(URL.revokeObjectURL) });
 }
+/* ---------- الصور الجاهزة (بطلب المستخدم): صور حرة الترخيص من Wikimedia Commons ---------- */
+const PACK_VERSION = 1;
+const PACK_BASE = 'https://upload.wikimedia.org/wikipedia/commons/thumb/';
+async function importPack() {
+  const node = el(`<div class="sheet"><div class="sheet-head"><h2>الصور الجاهزة</h2><button class="x" type="button" data-close aria-label="إغلاق">${icon('x')}</button></div>
+    <p class="p-note">تُنزَّل الصور من Wikimedia Commons (صور حرة الترخيص) وتُحفظ في مجموعتين: «سيارات» و«عامة». الحجم التقريبي 60–80 ميجا، يُفضّل الواي فاي.</p>
+    <div class="progress"><div class="bar"><i></i></div><span>جاري التحضير…</span><button type="button" class="link" data-stop>إيقاف</button></div></div>`);
+  openModal(node);
+  const bar = $('.bar i', node), label = $('.progress span', node);
+  let stopped = false;
+  $('[data-stop]', node).onclick = () => { stopped = true; label.textContent = 'جاري الإيقاف…'; };
+  let pack;
+  try { pack = await (await fetch('packs/starter.json', { cache: 'no-store' })).json(); }
+  catch { label.textContent = 'تعذّر تحميل القائمة. تحقق من الإنترنت.'; return; }
+  // كل عنصر: [المسار، الترخيص، المصور]. الصور المضافة سابقاً تُتخطى دون تنزيلها من جديد
+  const have = new Set([...S.items.values()].map((i) => i.packPath).filter(Boolean));
+  const all = Object.entries(pack.groups).flatMap(([g, rows]) => rows.map((r) => [g, ...(Array.isArray(r) ? r : [r])]));
+  const list = all.filter(([, path]) => !have.has(path));
+  const known = new Set([...S.items.values()].map((i) => i.hash).filter(Boolean));
+  const created = [];
+  let saved = 0, dup = 0;
+  const failed = [];
+  for (let i = 0; i < list.length; i++) {
+    if (stopped) { failed.push(`أُوقف: ${list.length - i} لم تُضف (يمكنك المتابعة لاحقاً، المضاف لا يتكرر)`); break; }
+    const [gname, path, license, author] = list[i];
+    label.textContent = `جاري الإضافة ${i + 1} من ${list.length}…`;
+    bar.style.width = `${Math.round((i / list.length) * 100)}%`;
+    try {
+      const res = await fetch(PACK_BASE + path);
+      if (!res.ok) throw new Error(res.status);
+      const blob = await res.blob();
+      if (!/^image\//.test(blob.type)) throw new Error('not-image');
+      const hash = await hashBlob(blob);
+      if (known.has(hash)) { dup++; continue; }
+      known.add(hash);
+      const g = findOrCreateGroup(gname, created);
+      if (created.length) { await DB.batch(['collections'], (st) => created.forEach((x) => st('collections').put(x))); created.length = 0; }
+      const file = decodeURIComponent(path.split('/').slice(-2)[0]);
+      const name = file.replace(/\.[^.]+$/, '').replace(/_/g, ' ');
+      const page = `https://commons.wikimedia.org/wiki/File:${encodeURIComponent(file)}`;
+      const note = `المصدر: Wikimedia Commons\n${page}${license ? `\nالترخيص: ${license}` : ''}${author ? `\nالمصوّر: ${author}` : ''}`;
+      await saveFile(new File([blob], `${name}.jpg`, { type: blob.type }), name, note, g.id, { hash, packPath: path, source: { site: 'Wikimedia Commons', page, license: license || '', author: author || '' } });
+      saved++;
+    } catch (err) {
+      failed.push(`صورة ${i + 1}: ${err?.name === 'QuotaExceededError' ? 'المساحة ممتلئة' : err?.message === 'not-image' ? 'الملف ليس صورة' : 'تعذّر التنزيل'}`);
+      if (err?.name === 'QuotaExceededError') break;
+    }
+  }
+  // الزر يختفي فقط إذا اكتملت كل الصور. غير ذلك يبقى، وإعادة الضغط تكمل الناقص فقط
+  if (!stopped && !failed.length) await setSetting('packImported', PACK_VERSION);
+
+  keepDataSafe();
+  await closeModal();
+  showResult(saved, dup, failed.length > 12 ? [...failed.slice(0, 12), `و${failed.length - 12} غيرها`] : failed);
+  location.hash = '#/'; render();
+  if (failed.length) toast('لإكمال الناقص فقط: «إضافة» ثم زر الصور الجاهزة مرة أخرى', '');
+  if (saved) aiKick();
+}
+
 function showResult(saved, dup, failed, dupLabel = 'مكررة تم تخطيها') {
   const node = el(`<div class="sheet"><div class="sheet-head"><h2>انتهى الحفظ</h2><button class="x" type="button" data-close aria-label="إغلاق">${icon('x')}</button></div>
     <ul class="result">
