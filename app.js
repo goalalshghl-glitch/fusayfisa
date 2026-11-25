@@ -4,7 +4,7 @@
    ========================================================= */
 'use strict';
 
-const APP_VERSION = '1.0.0';
+const APP_VERSION = '1.0.1';
 const DB_NAME = 'fusayfisa';
 const DB_VERSION = 1;
 const SHELL_FILES = ['./', './index.html', './style.css', './app.js', './manifest.webmanifest', './icons/icon.svg', './icons/icon-192.png', './icons/icon-512.png', './icons/apple-touch-icon.png'];
@@ -867,9 +867,8 @@ async function renderHome(v) {
   const all = [...S.images.values()].filter((i) => i.sectionId !== 'private').sort(byNewest);
   const feed = all.filter((i) => sectionVisible(i.sectionId));
   v.append(el(`<section class="hero">
-    <div><p class="eyebrow">${greeting()}${name ? '، ' + esc(name) : ''}</p>
-      <h1>كل فكرة لها صورة،<br>وكل صورة لها مكان.</h1>
-      <p class="lead">مكتبتك البصرية الخاصة: احفظ صورك ومراجعك، ونظّمها في أقسام وتصنيفات ومجموعات، وارجع إليها متى شئت — حتى دون إنترنت.</p>
+    <div><h1>كل فكرة لها صورة،<br>وكل صورة لها مكان.</h1>
+      <p class="lead">${greeting()}${name ? '، ' + esc(name) : ''}. مكتبتك البصرية الخاصة: احفظ صورك ومراجعك، ونظّمها في أقسام وتصنيفات ومجموعات، وارجع إليها متى شئت — حتى دون إنترنت.</p>
       <div class="hero-actions"><button class="btn primary" type="button" data-act="add">${icon('plus')} أضف صوراً</button>
       <a class="btn ghost" href="#/search">${icon('search')} ابحث في مكتبتك</a></div>
       <div class="quick-links">${S.sections.filter((s) => sectionVisible(s.id)).map((s) => `<a class="chip" href="#/s/${s.id}">${icon(s.icon)} ${esc(s.name)}</a>`).join('')}
