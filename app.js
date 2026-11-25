@@ -4,7 +4,7 @@
    ========================================================= */
 'use strict';
 
-const APP_VERSION = '2.4.4';
+const APP_VERSION = '2.4.5';
 const DB_NAME = 'fusayfisa';
 const DB_VERSION = 1; // نفس قاعدة البيانات السابقة حتى لا تضيع المراجع المحفوظة
 
@@ -1098,8 +1098,9 @@ function renderPrivate() {
   $$('.nav a').forEach((a) => a.classList.remove('on'));
   const g = PRIVATE[S.pgroup];
   const head = el(`<div class="p-head"><div class="seg2">${Object.entries(PRIVATE).map(([k, v]) => `<button type="button" data-g="${k}" class="${k === S.pgroup ? 'on' : ''}">${esc(v.label)}</button>`).join('')}</div>
-    <div class="p-tools"><button type="button" class="chip" data-exit>خروج</button></div></div>`);
+    <div class="p-tools"><button type="button" class="link muted" data-pass>تغيير كلمة المرور</button><button type="button" class="chip" data-exit>خروج</button></div></div>`);
   $$('[data-g]', head).forEach((b) => { b.onclick = () => { S.pgroup = b.dataset.g; S.ptype = null; render(); }; });
+  $('[data-pass]', head).onclick = () => changePassword();
   $('[data-exit]', head).onclick = () => { S.priv = false; S.unlocked = false; S.ptype = null; render(); scrollTo(0, 0); };
   main.append(head);
   if (g.adult) main.append(el('<p class="p-note">صور فوتوغرافية لنساء بالغات (18 سنة فأكثر) فقط، ومنفصلة تماماً عن الأنمي.</p>'));
@@ -1144,7 +1145,7 @@ function renderPrivate() {
   main.append(gridEl(list), footerEl());
 }
 
-/* النقطة الخفيفة ← نص التعريف ← كلمة «كيف» ← القسم الخاص مباشرة (بدون كلمة مرور بطلب المستخدم) */
+/* النقطة الخفيفة ← نص التعريف ← كلمة «كيف» ← كلمة المرور (الافتراضية 1231) */
 function openAbout() {
   const node = el(`<div class="sheet about"><div class="sheet-head"><h2>عن فسيفساء</h2><button class="x" type="button" data-close aria-label="إغلاق">${icon('x')}</button></div>
     <p>فسيفساء مكتبتك الشخصية للمراجع. تجمع فيها الصور والملفات التي تحب الرجوع إليها: أفكار للرسم، صور سيارات، تصاميم، مستندات، أو أي شيء يلهمك، كل ذلك في مكان واحد مرتب وهادئ.</p>
@@ -1154,15 +1155,14 @@ function openAbout() {
     <p>المجموعات اختيارية تماماً؛ أنشئ مجموعة باسم فقط، ثم أضف إليها المراجع من داخل كل مرجع. هذا <span data-how>كيف</span> تبقى مكتبتك منظمة دون أي تعقيد.</p>
     <p>كل مراجعك محفوظة على جهازك وحده: لا حسابات، ولا تُرفع صورك لأي خادم أو جهة، وتحليلها يتم داخل جهازك. يحتاج الموقع اتصالاً بالإنترنت أول مرة فقط لتنزيل ملفات التشغيل ونموذج التحليل (~66 ميجا) والخطوط، ثم يعمل دون إنترنت، ويُفضّل إضافته إلى الشاشة الرئيسية في الجوال ليبقى محفوظاً بشكل أفضل.</p>
   </div>`);
-  $('[data-how]', node).onclick = async () => {
-    S.unlocked = true; S.priv = true; S.ptype = null; S.q = ''; $('#q').value = '';
-    while (modals.length) await closeModal();
-    render(); scrollTo(0, 0);
-  };
+  $('[data-how]', node).onclick = () => openPassword();
   openModal(node);
 }
-function openPassword() {
-  const has = !!S.settings.privateHash;
+const DEFAULT_PASS = '1231';
+async function openPassword() {
+  // بطلب المستخدم: كلمة المرور تُعاد إلى 1231 مرة واحدة (بعدها يستطيع تغييرها من «تغيير كلمة المرور»)
+  if (!S.settings.privateHash || !S.settings.passReset1231) { await setPassword(DEFAULT_PASS); await setSetting('passReset1231', true); }
+  const has = true;
   const node = el(`<form class="sheet" novalidate><div class="sheet-head"><h2>${has ? 'كلمة المرور' : 'أنشئ كلمة مرور'}</h2><button class="x" type="button" data-close aria-label="إغلاق">${icon('x')}</button></div>
     <label class="field"><input class="input" type="password" name="p" placeholder="كلمة المرور" autocomplete="${has ? 'current-password' : 'new-password'}"></label>
     ${has ? '' : '<label class="field"><input class="input" type="password" name="p2" placeholder="أعد كتابتها" autocomplete="new-password"></label>'}
