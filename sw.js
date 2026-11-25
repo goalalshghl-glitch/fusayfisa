@@ -1,7 +1,7 @@
 /* فسيفساء | FUSAYFISA — Service Worker
    يخزن ملفات الواجهة لتعمل دون إنترنت. الصور نفسها محفوظة في IndexedDB وليست هنا.
    عند تعديل أي ملف من ملفات الواجهة: ارفع رقم CACHE_VERSION ليحصل المستخدمون على التحديث. */
-const CACHE_VERSION = 'v2.1.0';
+const CACHE_VERSION = 'v2.2.0';
 const SHELL_CACHE = `fusayfisa-shell-${CACHE_VERSION}`;
 const FONT_CACHE = 'fusayfisa-fonts';
 const SHELL = [

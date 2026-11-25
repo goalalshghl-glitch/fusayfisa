@@ -4,7 +4,7 @@
    ========================================================= */
 'use strict';
 
-const APP_VERSION = '2.1.0';
+const APP_VERSION = '2.2.0';
 const DB_NAME = 'fusayfisa';
 const DB_VERSION = 1; // نفس قاعدة البيانات السابقة حتى لا تضيع المراجع المحفوظة
 
@@ -294,68 +294,326 @@ function askName(title, placeholder) {
   });
 }
 
-/* ---------- إضافة مرجع: اختيار ← حفظ ← انتهى ---------- */
+/* =========================================================
+   الاستيراد الجماعي: مئات الصور، ملفات ZIP، ومجلدات
+   كل شيء يُقرأ داخل المتصفح ويُحفظ محلياً؛ لا رفع لأي جهة.
+   ========================================================= */
+const MIME = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp', avif: 'image/avif', bmp: 'image/bmp', heic: 'image/heic', heif: 'image/heif', svg: 'image/svg+xml', pdf: 'application/pdf', txt: 'text/plain', mp4: 'video/mp4', mov: 'video/quicktime' };
+const mimeOf = (name) => MIME[(name.split('.').pop() || '').toLowerCase()] || '';
+const skipName = (path) => /(^|\/)(__MACOSX|\.DS_Store|Thumbs\.db|desktop\.ini)(\/|$)|(^|\/)\._/i.test(path) || /\/$/.test(path);
+const parentFolder = (path) => { const parts = path.split('/').filter(Boolean); return parts.length > 1 ? parts[parts.length - 2] : ''; };
+
+/** قراءة فهرس ملف ZIP دون تحميله كاملاً في الذاكرة */
+async function readZip(file) {
+  const tailStart = Math.max(0, file.size - 65557);
+  const tail = new DataView(await file.slice(tailStart).arrayBuffer());
+  let eocd = -1;
+  for (let i = tail.byteLength - 22; i >= 0; i--) if (tail.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+  if (eocd < 0) throw new Error('ملف ZIP غير صالح');
+  const count = tail.getUint16(eocd + 10, true), cdSize = tail.getUint32(eocd + 12, true), cdOff = tail.getUint32(eocd + 16, true);
+  const cd = new DataView(await file.slice(cdOff, cdOff + cdSize).arrayBuffer());
+  const utf8 = new TextDecoder('utf-8', { fatal: true }), latin = new TextDecoder('latin1');
+  const out = [];
+  let p = 0;
+  for (let n = 0; n < count && p + 46 <= cd.byteLength; n++) {
+    if (cd.getUint32(p, true) !== 0x02014b50) break;
+    const method = cd.getUint16(p + 10, true), csize = cd.getUint32(p + 20, true), usize = cd.getUint32(p + 24, true);
+    const nlen = cd.getUint16(p + 28, true), xlen = cd.getUint16(p + 30, true), clen = cd.getUint16(p + 32, true), lho = cd.getUint32(p + 42, true);
+    const bytes = new Uint8Array(cd.buffer, cd.byteOffset + p + 46, nlen);
+    let name; try { name = utf8.decode(bytes); } catch { name = latin.decode(bytes); }
+    out.push({ name, method, csize, usize, lho });
+    p += 46 + nlen + xlen + clen;
+  }
+  return out;
+}
+async function zipEntryBlob(file, e) {
+  const h = new DataView(await file.slice(e.lho, e.lho + 30).arrayBuffer());
+  const start = e.lho + 30 + h.getUint16(26, true) + h.getUint16(28, true);
+  const raw = file.slice(start, start + e.csize);
+  const type = mimeOf(e.name);
+  if (e.method === 0) return new Blob([raw], { type });
+  if (e.method === 8 && 'DecompressionStream' in window) {
+    const stream = raw.stream().pipeThrough(new DecompressionStream('deflate-raw'));
+    return new Blob([await new Response(stream).arrayBuffer()], { type });
+  }
+  throw new Error('طريقة ضغط غير مدعومة في هذا المتصفح');
+}
+
+/** تحويل أي مجموعة ملفات (صور، ملفات، ZIP، مجلد) إلى قائمة عناصر موحدة */
+async function expandFiles(list) {
+  const items = [];
+  let backup = null;
+  for (const f of list) {
+    const path = f.webkitRelativePath || f.name;
+    if (skipName(path)) continue;
+    if (/\.zip$/i.test(f.name) || f.type === 'application/zip' || f.type === 'application/x-zip-compressed') {
+      let entries;
+      try { entries = await readZip(f); } catch (err) { items.push({ name: f.name, folder: '', size: f.size, error: err.message }); continue; }
+      if (entries.some((e) => e.name === 'fusayfisa-backup.json')) { backup = { file: f, entries }; continue; }
+      const zipFolder = f.name.replace(/\.zip$/i, '');
+      entries.filter((e) => !skipName(e.name) && e.usize > 0).forEach((e) => {
+        items.push({ name: e.name.split('/').pop(), folder: parentFolder(e.name) || zipFolder, size: e.usize, type: mimeOf(e.name), get: () => zipEntryBlob(f, e) });
+      });
+    } else {
+      items.push({ name: f.name, folder: parentFolder(path), size: f.size, type: f.type || mimeOf(f.name), file: f, get: async () => f });
+    }
+  }
+  return { items, backup };
+}
+async function hashBlob(blob) {
+  if (!crypto.subtle) return `${blob.size}`;
+  const buf = await crypto.subtle.digest('SHA-256', await blob.arrayBuffer());
+  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+function findOrCreateGroup(name, created) {
+  const key = normalize(name);
+  for (const g of S.groups.values()) if (normalize(g.name) === key) return g;
+  const g = { id: uid(), name: name.slice(0, 60), imageIds: [], coverId: null, createdAt: Date.now() };
+  S.groups.set(g.id, g);
+  created.push(g);
+  return g;
+}
+const matchPrivateType = (folder) => PRIVATE[S.pgroup].types.find(([t]) => normalize(t) === normalize(folder))?.[0] || null;
+
+/* ---------- نافذة الإضافة: اختيار ← معاينة ← حفظ ---------- */
 function openAdd(initialFiles) {
-  const files = [];
+  let items = [];
+  let backup = null;
   const urls = [];
+  const canFolder = 'webkitdirectory' in document.createElement('input') && !/iPhone|iPad|Android/i.test(navigator.userAgent);
   const node = el(`<form class="sheet" novalidate>
-    <div class="sheet-head"><h2>إضافة مرجع</h2><button class="x" type="button" data-close aria-label="إغلاق">${icon('x')}</button></div>
-    <label class="pick">${icon('upload')}<b>اختر صورة أو ملف</b><span>يمكنك اختيار أكثر من واحد</span><input type="file" multiple name="f"></label>
+    <div class="sheet-head"><h2>إضافة مراجع</h2><button class="x" type="button" data-close aria-label="إغلاق">${icon('x')}</button></div>
+    <label class="pick">${icon('upload')}<b>اختر صوراً أو ملفات</b><span>اختر عشرات أو مئات الصور مرة واحدة، أو ملف ZIP</span><input type="file" multiple name="f"></label>
+    ${canFolder ? '<label class="folder-btn">أو اختر مجلداً كاملاً<input type="file" name="dir" webkitdirectory multiple></label>' : ''}
+    <div class="summary" hidden></div>
     <div class="chosen" hidden></div>
-    <label class="field"><span>الاسم (اختياري)</span><input class="input" name="name" maxlength="120" autocomplete="off"></label>
-    <label class="field"><span>ملاحظة (اختياري)</span><textarea class="input" name="note" maxlength="2000"></textarea></label>
+    <div class="opts" hidden>
+      <label class="field" data-group-field><span>المجموعة</span><select class="input" name="group"></select></label>
+      <label class="field"><span>الاسم (اختياري)</span><input class="input" name="name" maxlength="120" autocomplete="off"></label>
+      <label class="field"><span>ملاحظة (اختياري)</span><textarea class="input" name="note" maxlength="2000"></textarea></label>
+    </div>
     ${S.priv ? `<p class="dest">تُحفظ في: <b>${esc(PRIVATE[S.pgroup].label)}${S.ptype ? ' › ' + esc(S.ptype) : ''}</b></p>` : ''}
     ${S.priv && PRIVATE[S.pgroup].adult ? '<label class="check"><input type="checkbox" name="adult"><span>أؤكد أن الصور لنساء بالغات (18 سنة فأكثر)</span></label>' : ''}
+    <div class="progress" hidden><div class="bar"><i></i></div><span></span></div>
     <button class="btn" type="submit" disabled>حفظ</button>
   </form>`);
-  const chosen = $('.chosen', node), save = $('[type=submit]', node), pick = $('.pick', node);
-  const paint = () => {
+  const $n = (s) => $(s, node);
+  const save = $n('[type=submit]');
+
+  function paint() {
     urls.forEach(URL.revokeObjectURL); urls.length = 0;
+    const ok = items.filter((i) => !i.error);
+    const summary = $n('.summary'), chosen = $n('.chosen');
+    if (backup) {
+      summary.hidden = false;
+      summary.innerHTML = `<b>نسخة احتياطية من فسيفساء</b><span>سيتم استرجاع مراجعها ومجموعاتها إلى مكتبتك (بدون حذف أي شيء موجود).</span>`;
+      chosen.hidden = true; $n('.opts').hidden = true;
+      save.disabled = false; save.textContent = 'استرجاع النسخة';
+      return;
+    }
+    const folders = {};
+    ok.forEach((i) => { if (i.folder) folders[i.folder] = (folders[i.folder] || 0) + 1; });
+    const fnames = Object.keys(folders);
+    summary.hidden = !items.length;
+    summary.innerHTML = items.length ? `<b>${ok.length} ${ok.length === 1 ? 'ملف' : 'ملفات'} جاهزة للحفظ</b>${fnames.length ? `<span>${fnames.slice(0, 8).map((f) => `${esc(f)} (${folders[f]})`).join('، ')}${fnames.length > 8 ? '…' : ''}</span>` : ''}${items.length - ok.length ? `<span class="bad">${items.length - ok.length} تعذّرت قراءتها</span>` : ''}<button type="button" class="link" data-clear>إلغاء الاختيار</button>` : '';
+    $('[data-clear]', summary)?.addEventListener('click', () => { items = []; paint(); });
     chosen.innerHTML = '';
-    files.forEach((f, i) => {
-      let inner = `<span>${esc(ext(f.name))}</span>`;
-      if (f.type.startsWith('image/')) { const u = URL.createObjectURL(f); urls.push(u); inner = `<img src="${u}" alt="">`; }
-      const d = el(`<div>${inner}<button type="button" aria-label="إزالة">${icon('x')}</button></div>`);
-      $('button', d).onclick = () => { files.splice(i, 1); paint(); };
-      chosen.append(d);
+    ok.slice(0, 24).forEach((it) => {
+      let inner = `<span>${esc(ext(it.name))}</span>`;
+      if (it.file && (it.type || '').startsWith('image/')) { const u = URL.createObjectURL(it.file); urls.push(u); inner = `<img src="${u}" alt="" loading="lazy">`; }
+      chosen.append(el(`<div>${inner}</div>`));
     });
-    chosen.hidden = !files.length;
-    save.disabled = !files.length;
-    save.textContent = files.length > 1 ? `حفظ (${files.length})` : 'حفظ';
+    if (ok.length > 24) chosen.append(el(`<div class="more">+${ok.length - 24}</div>`));
+    chosen.hidden = !ok.length;
+    // خيارات المجموعة
+    const opts = $n('.opts');
+    opts.hidden = !ok.length;
+    const gf = $n('[data-group-field]');
+    gf.hidden = S.priv && !fnames.length;
+    const sel = node.elements.group;
+    const prev = sel.value;
+    if (S.priv) {
+      sel.innerHTML = '<option value="">النوع المحدد حالياً</option><option value="__folder">حسب أسماء المجلدات</option>';
+      sel.value = fnames.length ? '__folder' : '';
+      gf.querySelector('span').textContent = 'النوع';
+    } else {
+      sel.innerHTML = `<option value="">بدون مجموعة</option>${fnames.length ? '<option value="__folder">مجموعة لكل مجلد (تلقائي)</option>' : ''}${[...S.groups.values()].map((g) => `<option value="${g.id}">${esc(g.name)}</option>`).join('')}<option value="__new">+ مجموعة جديدة…</option>`;
+      sel.value = prev && [...sel.options].some((o) => o.value === prev) ? prev : fnames.length ? '__folder' : (S.group || '');
+    }
+    node.elements.name.closest('.field').hidden = ok.length > 1;
+    save.disabled = !ok.length;
+    save.textContent = ok.length > 1 ? `حفظ ${ok.length}` : 'حفظ';
+  }
+  node.elements.group.onchange = async (e) => {
+    if (e.target.value !== '__new') return;
+    const name = await askName('مجموعة جديدة', 'مثال: سيارات');
+    if (!name) { e.target.value = ''; return; }
+    const created = [];
+    const g = findOrCreateGroup(name, created);
+    if (created.length) await DB.put('collections', g);
+    paint(); node.elements.group.value = g.id;
   };
-  const add = (list) => { files.push(...list); paint(); };
+  const add = async (list) => {
+    save.disabled = true; save.textContent = 'جاري القراءة…';
+    try {
+      const r = await expandFiles([...list]);
+      items.push(...r.items);
+      if (r.backup) backup = r.backup;
+    } catch (err) { toast('تعذّرت قراءة الملفات', 'err'); }
+    paint();
+  };
   node.elements.f.onchange = (e) => { add(e.target.files); e.target.value = ''; };
+  if (node.elements.dir) node.elements.dir.onchange = (e) => { add(e.target.files); e.target.value = ''; };
+  const pick = $n('.pick');
   pick.addEventListener('dragover', (e) => { e.preventDefault(); pick.classList.add('over'); });
   pick.addEventListener('dragleave', () => pick.classList.remove('over'));
   pick.addEventListener('drop', (e) => { e.preventDefault(); pick.classList.remove('over'); add(e.dataTransfer.files); });
   if (initialFiles) add(initialFiles);
 
+  let busy = false;
   node.onsubmit = async (e) => {
     e.preventDefault();
-    if (!files.length) return;
+    if (busy) return;
+    if (backup) { busy = true; save.disabled = true; await restoreBackup(backup, node); busy = false; return; }
+    const list = items.filter((i) => !i.error);
+    if (!list.length) return;
     if (node.elements.adult && !node.elements.adult.checked) return toast('هذا القسم للبالغات فقط: أكّد ذلك أولاً', 'err');
-    const extra = S.priv ? { space: 'private', pgroup: S.pgroup, ptype: S.ptype || null, adultConfirmed: !!node.elements.adult?.checked } : {};
-    save.disabled = true;
-    const name = node.elements.name.value.trim(), note = node.elements.note.value.trim();
-    let ok = 0;
-    for (let i = 0; i < files.length; i++) {
-      save.textContent = files.length > 1 ? `جاري الحفظ ${i + 1} من ${files.length}…` : 'جاري الحفظ…';
+    busy = true; save.disabled = true;
+    const prog = $n('.progress'), bar = $('.bar i', prog), label = $('span', prog);
+    prog.hidden = false;
+    const name = node.elements.name.value.trim(), note = node.elements.note.value.trim(), groupSel = node.elements.group.value;
+    const known = new Set([...S.items.values()].map((i) => i.hash).filter(Boolean));
+    const created = [];
+    let saved = 0, dup = 0;
+    const failed = items.filter((i) => i.error).map((i) => `${i.name}: ${i.error}`);
+    for (let i = 0; i < list.length; i++) {
+      const it = list[i];
+      label.textContent = `جاري الحفظ ${i + 1} من ${list.length}…`;
+      bar.style.width = `${Math.round((i / list.length) * 100)}%`;
       try {
-        await saveFile(files[i], name ? (files.length > 1 ? `${name} ${i + 1}` : name) : '', note, S.priv ? null : S.group, extra);
-        ok++;
+        const blob = await it.get();
+        const hash = await hashBlob(blob);
+        if (known.has(hash)) { dup++; continue; }
+        known.add(hash);
+        const file = blob instanceof File ? blob : new File([blob], it.name, { type: it.type || blob.type || '' });
+        let groupId = null, extra = { hash };
+        if (S.priv) {
+          const t = groupSel === '__folder' ? matchPrivateType(it.folder) : null;
+          extra = { ...extra, space: 'private', pgroup: S.pgroup, ptype: t || S.ptype || null, adultConfirmed: !!node.elements.adult?.checked };
+        } else if (groupSel === '__folder') {
+          if (it.folder) groupId = findOrCreateGroup(it.folder, created).id;
+        } else if (groupSel) groupId = groupSel;
+        if (created.length) { await DB.batch(['collections'], (st) => created.forEach((g) => st('collections').put(g))); created.length = 0; }
+        await saveFile(file, list.length === 1 ? name : '', note, groupId, extra);
+        saved++;
       } catch (err) {
         console.error(err);
-        toast(friendlyError(err), 'err');
-        if (err?.name === 'QuotaExceededError') break;
+        failed.push(`${it.name}: ${err?.name === 'QuotaExceededError' ? 'المساحة ممتلئة' : 'تعذّر الحفظ'}`);
+        if (err?.name === 'QuotaExceededError') { failed.push('توقف الحفظ لامتلاء مساحة الجهاز'); break; }
       }
+      if (i % 25 === 24) await new Promise((r) => setTimeout(r, 0));
     }
-    if (!ok) { save.disabled = false; save.textContent = 'حفظ'; return; }
-    toast(ok > 1 ? `حُفظت ${ok} مراجع` : 'تم الحفظ', 'ok');
+    bar.style.width = '100%';
     keepDataSafe();
     await closeModal();
+    if (list.length === 1 && saved === 1 && !failed.length) toast('تم الحفظ', 'ok');
+    else showResult(saved, dup, failed);
     if (!S.priv && location.hash.startsWith('#/fav')) location.hash = '#/'; else render();
   };
   openModal(node, { onClose: () => urls.forEach(URL.revokeObjectURL) });
+}
+function showResult(saved, dup, failed) {
+  const node = el(`<div class="sheet"><div class="sheet-head"><h2>انتهى الحفظ</h2><button class="x" type="button" data-close aria-label="إغلاق">${icon('x')}</button></div>
+    <ul class="result">
+      <li><b>${saved}</b> حُفظت</li>
+      ${dup ? `<li><b>${dup}</b> مكررة تم تخطيها</li>` : ''}
+      ${failed.length ? `<li class="bad"><b>${failed.length}</b> لم تُحفظ</li>` : ''}
+    </ul>
+    ${failed.length ? `<details class="fails"><summary>عرض الملفات التي لم تُحفظ</summary><ul>${failed.slice(0, 200).map((f) => `<li>${esc(f)}</li>`).join('')}</ul></details>` : ''}
+    <button class="btn" type="button" data-close>تم</button></div>`);
+  openModal(node);
+}
+
+/* ---------- النسخة الاحتياطية (ملف ZIP واحد) ---------- */
+const CRC_TABLE = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+function crc32(u8) { let c = 0xFFFFFFFF; for (let i = 0; i < u8.length; i++) c = CRC_TABLE[(c ^ u8[i]) & 0xFF] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; }
+async function exportBackup() {
+  const items = [...S.items.values()].filter((i) => !isPrivate(i) || S.unlocked);
+  if (!items.length) return toast('لا توجد مراجع لحفظها', 'err');
+  toast('جاري تجهيز النسخة الاحتياطية…');
+  const enc = new TextEncoder();
+  const parts = [], central = [];
+  let offset = 0;
+  const addEntry = async (path, blob) => {
+    const data = new Uint8Array(await blob.arrayBuffer());
+    const crc = crc32(data), name = enc.encode(path);
+    const lh = new DataView(new ArrayBuffer(30));
+    lh.setUint32(0, 0x04034b50, true); lh.setUint16(4, 20, true); lh.setUint16(6, 0x800, true);
+    lh.setUint32(14, crc, true); lh.setUint32(18, data.length, true); lh.setUint32(22, data.length, true); lh.setUint16(26, name.length, true);
+    parts.push(lh, name, blob);
+    const ch = new DataView(new ArrayBuffer(46));
+    ch.setUint32(0, 0x02014b50, true); ch.setUint16(4, 20, true); ch.setUint16(6, 20, true); ch.setUint16(8, 0x800, true);
+    ch.setUint32(16, crc, true); ch.setUint32(20, data.length, true); ch.setUint32(24, data.length, true); ch.setUint16(28, name.length, true); ch.setUint32(42, offset, true);
+    central.push(ch, name);
+    offset += 30 + name.length + data.length;
+  };
+  try {
+    for (const it of items) {
+      const f = await DB.get('files', it.id); if (f) await addEntry(`files/${it.id}`, f.blob);
+      const t = await DB.get('thumbs', it.id); if (t) await addEntry(`thumbs/${it.id}`, t.blob);
+    }
+    const ids = new Set(items.map((i) => i.id));
+    const groups = [...S.groups.values()].map((g) => ({ ...g, imageIds: g.imageIds.filter((x) => ids.has(x)) }));
+    await addEntry('fusayfisa-backup.json', new Blob([JSON.stringify({ app: 'fusayfisa', format: 2, exportedAt: Date.now(), items, groups })]));
+    const cdSize = central.reduce((a, p) => a + p.byteLength, 0);
+    const end = new DataView(new ArrayBuffer(22));
+    end.setUint32(0, 0x06054b50, true); end.setUint16(8, central.length / 2, true); end.setUint16(10, central.length / 2, true);
+    end.setUint32(12, cdSize, true); end.setUint32(16, offset, true);
+    const zip = new Blob([...parts, ...central, end], { type: 'application/zip' });
+    const d = new Date();
+    const a = el(`<a download="fusayfisa-backup-${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}.zip"></a>`);
+    a.href = URL.createObjectURL(zip);
+    document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+    toast(`جُهّزت النسخة: ${items.length} مرجع`, 'ok');
+  } catch (err) { console.error(err); toast('تعذّر تجهيز النسخة الاحتياطية', 'err'); }
+}
+async function restoreBackup({ file, entries }, node) {
+  const prog = $('.progress', node), bar = $('.bar i', prog), label = $('span', prog);
+  prog.hidden = false;
+  try {
+    const byName = new Map(entries.map((e) => [e.name, e]));
+    const data = JSON.parse(await (await zipEntryBlob(file, byName.get('fusayfisa-backup.json'))).text());
+    if (data.app !== 'fusayfisa') throw new Error('bad');
+    let n = 0, skipped = 0;
+    for (let i = 0; i < data.items.length; i++) {
+      const rec = data.items[i];
+      label.textContent = `جاري الاسترجاع ${i + 1} من ${data.items.length}…`;
+      bar.style.width = `${Math.round((i / data.items.length) * 100)}%`;
+      if (S.items.has(rec.id)) { skipped++; continue; }
+      const fe = byName.get(`files/${rec.id}`), te = byName.get(`thumbs/${rec.id}`);
+      const blob = fe ? await zipEntryBlob(file, fe) : null, thumb = te ? await zipEntryBlob(file, te) : null;
+      await DB.batch(['images', 'files', 'thumbs'], (st) => {
+        st('images').put(rec);
+        if (blob) st('files').put({ id: rec.id, blob: new Blob([blob], { type: rec.mime || '' }) });
+        if (thumb) st('thumbs').put({ id: rec.id, blob: new Blob([thumb], { type: 'image/webp' }) });
+      });
+      S.items.set(rec.id, rec);
+      n++;
+    }
+    for (const g of data.groups || []) {
+      const cur = S.groups.get(g.id);
+      const merged = cur ? { ...cur, imageIds: [...new Set([...cur.imageIds, ...g.imageIds])] } : g;
+      await DB.put('collections', merged); S.groups.set(merged.id, merged);
+    }
+    await closeModal();
+    showResult(n, skipped, []);
+    render();
+  } catch (err) {
+    console.error(err);
+    prog.hidden = true;
+    toast('تعذّر استرجاع النسخة الاحتياطية', 'err');
+  }
 }
 
 /* ---------- عرض مرجع ---------- */
@@ -515,6 +773,11 @@ function gridEl(list) {
   grid.onclick = (e) => { const c = e.target.closest('.card'); if (c) openItem(c.dataset.id, list); };
   return grid;
 }
+function footerEl() {
+  const f = el(`<div class="foot"><button type="button" class="link muted">حفظ نسخة احتياطية من مكتبتك</button><span>لاسترجاعها: اضغط «إضافة» واختر ملف النسخة.</span></div>`);
+  $('button', f).onclick = exportBackup;
+  return f;
+}
 function emptyEl(title, text, withAdd) {
   return el(`<div class="empty"><h2>${esc(title)}</h2><p>${esc(text)}</p>${withAdd ? `<button class="add" type="button" data-add>${icon('plus')}<span>إضافة مرجع</span></button>` : ''}</div>`);
 }
@@ -578,7 +841,7 @@ function render() {
     else main.append(emptyEl('لا توجد مراجع بعد', 'اضغط «إضافة» لحفظ أول صورة أو ملف.', true));
     return;
   }
-  main.append(gridEl(list));
+  main.append(gridEl(list), footerEl());
 }
 
 function renderPrivate() {
@@ -605,7 +868,7 @@ function renderPrivate() {
     main.append(emptyEl(S.q ? 'لا توجد نتائج' : 'لا توجد صور هنا بعد', S.q ? 'جرّب كلمة أخرى، أو ابحث عنها في Pinterest.' : 'ابحث في Pinterest، احفظ الصورة على جهازك، ثم اضغط «إضافة».', !S.q));
     return;
   }
-  main.append(gridEl(list));
+  main.append(gridEl(list), footerEl());
 }
 
 /* النقطة الخفيفة ← نص التعريف ← كلمة «كيف» ← كلمة المرور */
