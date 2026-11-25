@@ -1,11 +1,12 @@
 /* فسيفساء | FUSAYFISA — Service Worker
    يخزن ملفات الواجهة لتعمل دون إنترنت. الصور نفسها محفوظة في IndexedDB وليست هنا.
    عند تعديل أي ملف من ملفات الواجهة: ارفع رقم CACHE_VERSION ليحصل المستخدمون على التحديث. */
-const CACHE_VERSION = 'v2.3.0';
+const CACHE_VERSION = 'v2.4.0';
 const SHELL_CACHE = `fusayfisa-shell-${CACHE_VERSION}`;
 const FONT_CACHE = 'fusayfisa-fonts';
+const LIB_CACHE = 'fusayfisa-ai-lib';
 const SHELL = [
-  './', './index.html', './style.css', './app.js', './manifest.webmanifest',
+  './', './index.html', './style.css', './app.js', './ai.js', './manifest.webmanifest',
   './icons/icon.svg', './icons/icon-192.png', './icons/icon-512.png', './icons/maskable-512.png', './icons/apple-touch-icon.png',
 ];
 
@@ -36,6 +37,11 @@ self.addEventListener('fetch', (event) => {
   // الخطوط من Google: من الذاكرة أولاً ثم تحديثها في الخلفية
   if (url.hostname === 'fonts.googleapis.com' || url.hostname === 'fonts.gstatic.com') {
     event.respondWith(staleWhileRevalidate(req, FONT_CACHE));
+    return;
+  }
+  // مكتبة الذكاء (jsDelivr): تُخزن لتعمل دون إنترنت. ملفات النموذج نفسها تخزنها المكتبة في ذاكرتها الخاصة.
+  if (url.hostname === 'cdn.jsdelivr.net' && url.pathname.includes('@huggingface/transformers') || (url.hostname === 'cdn.jsdelivr.net' && url.pathname.includes('onnxruntime-web'))) {
+    event.respondWith(staleWhileRevalidate(req, LIB_CACHE));
     return;
   }
   if (url.origin !== self.location.origin) return;

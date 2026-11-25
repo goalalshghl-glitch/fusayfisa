@@ -4,7 +4,7 @@
    ========================================================= */
 'use strict';
 
-const APP_VERSION = '2.3.0';
+const APP_VERSION = '2.4.0';
 const DB_NAME = 'fusayfisa';
 const DB_VERSION = 1; // نفس قاعدة البيانات السابقة حتى لا تضيع المراجع المحفوظة
 
@@ -75,7 +75,7 @@ const DB = {
 const friendlyError = (e) => (e?.name === 'QuotaExceededError' ? 'مساحة الجهاز المخصصة للموقع ممتلئة. احذف بعض المراجع ثم حاول مجدداً.' : 'تعذّر الحفظ، حاول مرة أخرى.');
 
 /* ---------- الحالة ---------- */
-const S = { items: new Map(), groups: new Map(), q: '', group: null, settings: {}, unlocked: false, priv: false, pgroup: 'anime', ptype: null };
+const S = { items: new Map(), groups: new Map(), q: '', group: null, settings: {}, unlocked: false, priv: false, pgroup: 'anime', ptype: null, sem: null };
 
 /* ---------- القسم الخاص: الأنمي والصور النسائية (بالغات فقط) ---------- */
 const PRIVATE = {
@@ -95,6 +95,20 @@ const PRIVATE = {
   ] },
 };
 const isPrivate = (i) => i.space === 'private' || i.sectionId === 'private';
+const UNSORTED = 'غير مصنف';
+/** القسم الفعلي لصورة خاصة: اليدوي أولاً، ثم ما حدده الذكاء، ثم مكان الرفع */
+const groupOf = (i) => i.pgroupManual || i.auto?.group || i.pgroup || 'anime';
+/** أنواع الصورة: إذا عدّلها المستخدم يدوياً فهي المعتمدة، وإلا التلقائية + النوع المختار عند الرفع */
+const tagsOf = (i) => {
+  if (Array.isArray(i.mtags)) return i.mtags;
+  const t = [...(i.auto?.group === groupOf(i) ? i.auto.tags : [])];
+  if (i.ptype && !t.includes(i.ptype)) t.push(i.ptype);
+  return t;
+};
+const analyzed = (i) => !!i.emb;
+/** غير مصنف: حُللت ولم يُعرف قسمها بثقة، أو ليس لها أي نوع */
+const isUnsorted = (i) => (analyzed(i) && !i.pgroupManual && !i.auto?.group) || (!tagsOf(i).length && (analyzed(i) || Array.isArray(i.mtags)));
+const typesOf = (g) => [...PRIVATE[g].types.map(([t]) => t), ...((S.settings.customTypes || {})[g] || [])];
 async function hashPass(pass, salt) {
   const data = new TextEncoder().encode(`${salt}:${pass}`);
   if (crypto.subtle) return [...new Uint8Array(await crypto.subtle.digest('SHA-256', data))].map((b) => b.toString(16).padStart(2, '0')).join('');
@@ -145,7 +159,7 @@ function rebuildGroupIndex() {
 function matches(item, q) {
   const words = normalize(q).split(' ').filter(Boolean);
   if (!words.length) return true;
-  const key = groupNames.get(item.id) || '';
+  const key = (groupNames.get(item.id) || '') + (isPrivate(item) ? ` ${PRIVATE[groupOf(item)]?.label || ''} ${tagsOf(item).join(' ')}${isUnsorted(item) ? ' ' + UNSORTED : ''}` : '');
   let c = hayCache.get(item);
   if (!c || c.key !== key) { c = { key, hay: normalize(`${item.name} ${noteOf(item)} ${item.text?.body || ''} ${key}`) }; hayCache.set(item, c); }
   return words.every((w) => c.hay.includes(w));
@@ -275,6 +289,7 @@ window.addEventListener('popstate', () => {
   setTimeout(() => m.wrap.remove(), 220);
   if (!modals.length) document.body.classList.remove('modal-open');
   m.onClose?.();
+  if (!modals.length && AI.dirty) { AI.dirty = false; render(); }
   waiting.shift()?.();
 });
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && modals.length) closeModal(); });
@@ -516,7 +531,7 @@ function openAdd(initialFiles) {
         let groupId = null, extra = { hash };
         if (S.priv) {
           const t = groupSel === '__folder' ? matchPrivateType(it.folder) : null;
-          extra = { ...extra, space: 'private', pgroup: S.pgroup, ptype: t || S.ptype || null, adultConfirmed: !!node.elements.adult?.checked };
+          extra = { ...extra, space: 'private', pgroup: S.pgroup, ptype: t || (S.ptype !== UNSORTED && S.ptype) || null, adultConfirmed: !!node.elements.adult?.checked };
         } else if (groupSel === '__folder') {
           if (it.folder) groupId = findOrCreateGroup(it.folder, created).id;
         } else if (groupSel) groupId = groupSel;
@@ -536,6 +551,7 @@ function openAdd(initialFiles) {
     if (list.length === 1 && saved === 1 && !failed.length) toast('تم الحفظ', 'ok');
     else showResult(saved, dup, failed);
     if (!S.priv && location.hash.startsWith('#/fav')) location.hash = '#/'; else render();
+    if (saved) aiKick();
   };
   openModal(node, { onClose: () => urls.forEach(URL.revokeObjectURL) });
 }
@@ -581,7 +597,7 @@ async function exportBackup() {
     }
     const ids = new Set(items.map((i) => i.id));
     const groups = [...S.groups.values()].map((g) => ({ ...g, imageIds: g.imageIds.filter((x) => ids.has(x)) }));
-    await addEntry('fusayfisa-backup.json', new Blob([JSON.stringify({ app: 'fusayfisa', format: 2, exportedAt: Date.now(), items, groups })]));
+    await addEntry('fusayfisa-backup.json', new Blob([JSON.stringify({ app: 'fusayfisa', format: 2, exportedAt: Date.now(), items: items.map(({ emb, ...r }) => r), groups, customTypes: S.unlocked ? S.settings.customTypes || {} : {} })])); // البصمات تُعاد حسابها بعد الاسترجاع
     const cdSize = central.reduce((a, p) => a + p.byteLength, 0);
     const end = new DataView(new ArrayBuffer(22));
     end.setUint32(0, 0x06054b50, true); end.setUint16(8, central.length / 2, true); end.setUint16(10, central.length / 2, true);
@@ -620,6 +636,11 @@ async function restoreBackup({ file, entries }, node) {
       S.items.set(rec.id, rec);
       n++;
     }
+    if (data.customTypes) { // الأنواع التي أضافها المستخدم
+      const ct = { ...(S.settings.customTypes || {}) };
+      for (const [k, v] of Object.entries(data.customTypes)) ct[k] = [...new Set([...(ct[k] || []), ...v])];
+      await setSetting('customTypes', ct);
+    }
     for (const g of data.groups || []) {
       const cur = S.groups.get(g.id);
       const merged = cur ? { ...cur, imageIds: [...new Set([...cur.imageIds, ...g.imageIds])] } : g;
@@ -628,6 +649,7 @@ async function restoreBackup({ file, entries }, node) {
     await closeModal();
     showResult(n, skipped, [], 'موجودة في مكتبتك مسبقاً');
     render();
+    if (n) aiKick();
   } catch (err) {
     console.error(err);
     prog.hidden = true;
@@ -668,7 +690,9 @@ async function openItem(id, list) {
         <button class="act del" type="button" data-a="del">${icon('trash')}<span>حذف</span></button>
       </div>
       <div class="v-groups"></div>
-    </div></div>`);
+      <div class="v-class"></div>
+    </div>
+    <section class="v-similar" aria-label="صور مشابهة"></section></div>`);
 
   // حفظ الاسم والملاحظة تلقائياً أثناء الكتابة
   const saved = $('.saved', node);
@@ -699,6 +723,59 @@ async function openItem(id, list) {
     });
   };
   paintGroups();
+
+  // القسم الخاص: تعديل القسم والأنواع يدوياً (التعديل اليدوي هو المعتمد)
+  const classBox = $('.v-class', node);
+  const paintClass = () => {
+    classBox.innerHTML = '';
+    const cur = S.items.get(id);
+    if (!cur || !isPrivate(cur)) return;
+    const g = groupOf(cur), tags = tagsOf(cur);
+    const how = Array.isArray(cur.mtags) || cur.pgroupManual ? 'مصنفة يدوياً' : analyzed(cur) ? (cur.auto?.group ? 'مصنفة تلقائياً حسب محتواها' : 'لم يتأكد التحليل من قسمها: اختر لها يدوياً') : 'لم تُحلل بعد';
+    classBox.append(el(`<div class="label">التصنيف · <span class="muted">${esc(how)}</span></div>`));
+    const seg = el(`<div class="seg2 small">${Object.entries(PRIVATE).map(([k, v]) => `<button type="button" data-g="${k}" class="${k === g ? 'on' : ''}">${esc(v.label)}</button>`).join('')}</div>`);
+    $$('[data-g]', seg).forEach((b) => { b.onclick = async () => {
+      if (b.dataset.g === g) return;
+      await updateItem(id, { pgroupManual: b.dataset.g, mtags: [] }); changed = true; paintClass();
+    }; });
+    classBox.append(seg);
+    const box = el('<div class="v-groups"></div>');
+    typesOf(g).forEach((t) => {
+      const on = tags.includes(t);
+      const b = el(`<button type="button" class="chip ${on ? 'on' : ''}" aria-pressed="${on}">${on ? icon('check') : ''}${esc(t)}</button>`);
+      b.onclick = async () => {
+        const now = tagsOf(S.items.get(id));
+        await updateItem(id, { mtags: on ? now.filter((x) => x !== t) : [...now, t], pgroupManual: groupOf(S.items.get(id)) });
+        changed = true; paintClass();
+      };
+      box.append(b);
+    });
+    classBox.append(box);
+    if (Array.isArray(cur.mtags) || cur.pgroupManual) {
+      const r = el('<button type="button" class="link muted">إرجاع للتصنيف التلقائي</button>');
+      r.onclick = async () => { await updateItem(id, { mtags: undefined, pgroupManual: undefined, ptype: null }); changed = true; paintClass(); };
+      classBox.append(r);
+    }
+  };
+  paintClass();
+
+  // الصور المشابهة حسب المحتوى (وليست عشوائية)
+  const simBox = $('.v-similar', node);
+  const paintSimilar = async () => {
+    const cur = S.items.get(id);
+    if (!cur || cur.kind !== 'image') return;
+    simBox.innerHTML = '<h3>صور مشابهة</h3>';
+    if (!cur.emb) { simBox.append(el(`<p class="muted">${AI.failed ? 'لم تُحلل هذه الصورة بعد (يحتاج اتصالاً بالإنترنت لأول مرة).' : 'جاري تحليل الصورة لإيجاد المشابه لها…'}</p>`)); return; }
+    try { await aiMod(); } catch { simBox.append(el('<p class="muted">تعذّر تحميل أداة التحليل.</p>')); return; }
+    const sim = similarTo(cur);
+    if (!sim.length) { simBox.append(el('<p class="muted">لا توجد في مكتبتك صور مشابهة لهذه بعد.</p>')); return; }
+    const go = (sid) => { closeModal().then(() => openItem(sid)); };
+    const very = sim.filter(([x]) => x >= SIM_HIGH).map((x) => x[1]), close = sim.filter(([x]) => x < SIM_HIGH).map((x) => x[1]);
+    simBox.innerHTML = '';
+    if (very.length) { simBox.append(el('<h3>مشابهة جداً</h3>'), gridEl(very, go)); }
+    if (close.length) { simBox.append(el(`<h3>${very.length ? 'مشابهة في النوع أو الأسلوب' : 'صور مشابهة في النوع أو الأسلوب'}</h3>`), gridEl(close, go)); }
+  };
+  paintSimilar();
 
   $('.acts', node).onclick = async (e) => {
     const b = e.target.closest('[data-a]');
@@ -752,6 +829,137 @@ async function openItem(id, list) {
   openModal(node, { cls: 'view', onClose: () => { if (fileURL) setTimeout(() => URL.revokeObjectURL(fileURL), 1000); if (changed) render(); } });
 }
 
+/* ---------- الذكاء المحلي: التحليل في الخلفية، الصور المشابهة، البحث بالمعنى ---------- */
+const AI = { mod: null, running: false, failed: false, labels: null, done: 0, total: 0, dl: null };
+// حدود معايرة على 88 صورة حقيقية (انظر ai.js)
+const SIM_MIN = 0.6;    // تشابه صورتين: 0.6 ≈ أعلى 4٪ من الأزواج
+const SIM_HIGH = 0.75;  // نفس الشخص/الشخصية/الجلسة غالباً ≈ 0.78–0.92، ونساء مختلفات ≈ 0.63
+const SEM_MIN = 0.18;   // أقل تطابق بين عبارة البحث والصورة
+const SEM_Z = 2.0;      // ويجب أن تتميز الصورة عن باقي المكتبة (z مقاوم: الوسيط و MAD)
+async function aiMod() {
+  if (!AI.mod) {
+    AI.mod = await import('./ai.js');
+    AI.mod.setProgressHandler((got, total) => { AI.dl = total ? [got, total] : null; aiStatus(); });
+  }
+  return AI.mod;
+}
+const needsAI = (i) => i.kind === 'image' && (!i.emb || i.aiv !== AI.mod?.MODEL_TAG);
+function aiStatus() {
+  const bar = $('#aiStatus');
+  if (!bar) return;
+  if (!AI.running) { bar.hidden = true; return; }
+  bar.hidden = false;
+  const dl = AI.dl && AI.dl[0] < AI.dl[1] ? ` · تنزيل نموذج التحليل لأول مرة ${Math.round((AI.dl[0] / AI.dl[1]) * 100)}٪` : '';
+  bar.textContent = `تحليل محتوى الصور ${AI.done} من ${AI.total}${dl}`;
+}
+async function aiLabels(m) {
+  if (AI.labels) return AI.labels;
+  const r = await m.labelEmbeddings(S.settings.aiLabels);
+  if (r.save) await setSetting('aiLabels', r.save);
+  return (AI.labels = r.labels);
+}
+/** يحلل الصور التي ليس لها بصمة. يعمل في الخلفية، ويمكن استدعاؤه أكثر من مرة بأمان. */
+async function aiIndex() {
+  if (AI.running) return;
+  let m;
+  try { m = await aiMod(); } catch (e) { console.warn('AI unavailable', e); AI.failed = true; return; }
+  let todo = [...S.items.values()].filter(needsAI).sort(newest);
+  if (!todo.length) return;
+  AI.running = true; AI.done = 0; AI.total = todo.length; aiStatus();
+  let changedView = false;
+  try {
+    let labels = null;
+    for (let n = 0; n < todo.length; n++) {
+      const it = S.items.get(todo[n].id);
+      if (!it) { AI.done++; continue; }
+      const t = await DB.get('thumbs', it.id) || await DB.get('files', it.id);
+      if (!t?.blob) { AI.done++; continue; }
+      let emb;
+      try { emb = await m.embedImage(t.blob); } catch (e) { console.warn('embed failed', it.id, e); AI.done++; continue; }
+      const patch = { emb, aiv: m.MODEL_TAG };
+      if (isPrivate(it)) {
+        labels ||= await aiLabels(m);
+        const c = m.classify(emb, labels);
+        patch.auto = { group: c.group, tags: c.tags, p: c.detail };
+      }
+      const cur = S.items.get(it.id);
+      if (!cur) { AI.done++; continue; }
+      const rec = { ...cur, ...patch };
+      await DB.put('images', rec);
+      S.items.set(rec.id, rec);
+      AI.done++; changedView = true;
+      aiStatus();
+      if (n % 4 === 3) await new Promise((r) => setTimeout(r, 0));
+      if (n === todo.length - 1) { // صور أضيفت أثناء التحليل
+        const more = [...S.items.values()].filter((x) => needsAI(x) && !todo.some((y) => y.id === x.id));
+        if (more.length) { todo = todo.concat(more); AI.total = todo.length; }
+      }
+    }
+  } catch (e) {
+    console.error('AI index error', e);
+    AI.failed = true;
+    toast('تعذّر تحليل الصور الآن (تحقق من الإنترنت لأول تنزيل)، سيُعاد المحاولة لاحقاً', 'err');
+  } finally {
+    AI.running = false; aiStatus();
+    if (changedView) { if (modals.length) AI.dirty = true; else render(); }
+  }
+}
+const aiKick = () => setTimeout(() => aiIndex(), 300);
+
+/** أقرب الصور شبهاً لصورة معينة، من نفس المساحة فقط (العامة مع العامة، والخاصة مع الخاصة) */
+function similarTo(item, limit = 30) {
+  if (!item.emb || !AI.mod) return [];
+  const priv = isPrivate(item);
+  const out = [];
+  S.items.forEach((o) => {
+    if (o.id === item.id || !o.emb || isPrivate(o) !== priv) return;
+    const s = AI.mod.dot(item.emb, o.emb);
+    if (s >= SIM_MIN) out.push([s, o]);
+  });
+  return out.sort((a, b) => b[0] - a[0]).slice(0, limit);
+}
+
+/** البحث بالمعنى: يحوّل العبارة إلى بصمة ويقارنها ببصمات الصور. النتيجة في S.sem ثم إعادة العرض. */
+async function semSearch(q) {
+  S.sem = { q, pending: true, scores: new Map(), en: null };
+  try {
+    const m = await aiMod();
+    const en = m.toEnglish(normalize(q));
+    if (!en) { S.sem = { q, pending: false, scores: new Map(), en: null }; if (S.q === q) render(); return; }
+    const embs = await m.embedTexts([en, `a photo of ${en}`, `an anime illustration of ${en}`, `a character with ${en}`, `a woman wearing ${en}`]);
+    const qe = new Float32Array(embs[0].length);
+    embs.forEach((e) => e.forEach((v, i) => { qe[i] += v; }));
+    const n = Math.hypot(...qe) || 1; qe.forEach((v, i) => { qe[i] = v / n; });
+    const scores = new Map();
+    S.items.forEach((i) => { if (i.emb) scores.set(i.id, m.dot(qe, i.emb)); });
+    // الوسيط والانحراف المطلق الوسيط: لا يتأثران إذا كانت نسبة كبيرة من الصور مطابقة
+    const med = (a) => { const b = [...a].sort((x, y) => x - y); return b[Math.floor(b.length / 2)] ?? 0; };
+    const v = [...scores.values()], mean = med(v), sd = Math.max(0.005, 1.4826 * med(v.map((x) => Math.abs(x - mean))));
+    if (S.q === q) S.sem = { q, pending: false, scores, en, mean, sd };
+  } catch (e) {
+    console.warn('semantic search failed', e);
+    if (S.q === q) S.sem = { q, pending: false, scores: new Map(), en: null, failed: true };
+  }
+  if (S.q === q) render();
+}
+/** يطبق البحث (نص + معنى) على قائمة: المطابق بالنص أولاً ثم الأقرب بالمعنى */
+function applySearch(list) {
+  if (!S.q) return list;
+  rebuildGroupIndex();
+  const text = list.filter((i) => matches(i, S.q));
+  if (S.sem?.q !== S.q) semSearch(S.q);
+  const sc = S.sem?.q === S.q ? S.sem.scores : null;
+  if (!sc || !sc.size) return text;
+  const ids = new Set(text.map((i) => i.id));
+  const { mean, sd } = S.sem;
+  // مكتبة صغيرة جداً: المتوسط والانحراف غير موثوقين، نكتفي بالحد المطلق مع هامش أعلى
+  const zOk = sc.size >= 12 ? (s) => (s - mean) / sd >= SEM_Z : (s) => s >= SEM_MIN + 0.03;
+  const sem = list.filter((i) => !ids.has(i.id) && sc.has(i.id)).map((i) => [sc.get(i.id), i])
+    .filter(([s]) => s >= SEM_MIN && zOk(s)).sort((a, b) => b[0] - a[0]).slice(0, 60).map((x) => x[1]);
+  return [...text, ...sem];
+}
+const searchPending = () => S.q && S.sem?.q === S.q && S.sem.pending;
+
 /* ---------- الصفحات ---------- */
 function cardHTML(i) {
   let top;
@@ -760,12 +968,12 @@ function cardHTML(i) {
   else top = `<span class="fileph">${icon('file')}<small>${esc(ext(i.fileName || i.name))}</small></span>`;
   const note = noteOf(i);
   return `<button class="card" type="button" data-id="${i.id}" aria-label="${esc(i.name)}">${top}
-    <span class="name">${esc(i.name || 'بدون اسم')}</span>${note ? `<span class="note">${esc(note)}</span>` : ''}
+    ${i.kind === 'image' ? '' : `<span class="name">${esc(i.name || 'بدون اسم')}</span>`}${note ? `<span class="note">${esc(note)}</span>` : ''}
     ${i.favorite ? `<span class="heart">${icon('heart')}</span>` : ''}</button>`;
 }
 /** شبكة بأعمدة متوازنة تحافظ على أبعاد الصور، وتُضاف البطاقات تدريجياً */
-function gridEl(list) {
-  const w = $('#main').clientWidth || innerWidth;
+function gridEl(list, onOpen) {
+  const w = onOpen ? Math.min(innerWidth, 1100) : ($('#main').clientWidth || innerWidth);
   const n = w < 520 ? 2 : w < 820 ? 3 : w < 1050 ? 4 : 5;
   const grid = el('<div class="grid"></div>');
   const cols = Array.from({ length: n }, () => el('<div class="col"></div>'));
@@ -789,7 +997,7 @@ function gridEl(list) {
     const obs = new IntersectionObserver((e) => { if (e[0].isIntersecting) { more(); if (shown >= list.length) { obs.disconnect(); s.remove(); } } }, { rootMargin: '800px 0px' });
     requestAnimationFrame(() => { grid.after(s); obs.observe(s); });
   }
-  grid.onclick = (e) => { const c = e.target.closest('.card'); if (c) openItem(c.dataset.id, list); };
+  grid.onclick = (e) => { const c = e.target.closest('.card'); if (c) (onOpen ? onOpen(c.dataset.id) : openItem(c.dataset.id, list)); };
   return grid;
 }
 function footerEl() {
@@ -853,10 +1061,10 @@ function render() {
     } else list.sort(newest);
   }
 
-  if (S.q) { rebuildGroupIndex(); list = list.filter((i) => matches(i, S.q)); }
+  if (S.q) list = applySearch(list);
 
   if (!list.length) {
-    if (S.q) main.append(emptyEl('لا توجد نتائج', 'جرّب كلمة أخرى.', false));
+    if (S.q) main.append(searchPending() ? emptyEl('جاري البحث في محتوى الصور…', '', false) : emptyEl('لا توجد نتائج', 'لا توجد صورة في مكتبتك تطابق هذا البحث.', false));
     else if (fav) main.append(emptyEl('لا يوجد شيء في المفضلة', 'افتح أي مرجع واضغط «مفضلة».', false));
     else if (S.group) main.append(emptyEl('المجموعة فارغة', 'افتح أي مرجع واختر هذه المجموعة من أسفله.', false));
     else main.append(emptyEl('لا توجد مراجع بعد', 'اضغط «إضافة» لحفظ أول صورة أو ملف.', true));
@@ -878,15 +1086,41 @@ function renderPrivate() {
   $('[data-pass]', head).onclick = () => changePassword();
   main.append(head);
   if (g.adult) main.append(el('<p class="p-note">صور فوتوغرافية لنساء بالغات (18 سنة فأكثر) فقط، ومنفصلة تماماً عن الأنمي.</p>'));
+
+  const all = [...S.items.values()].filter((i) => isPrivate(i) && groupOf(i) === S.pgroup);
+  const count = (t) => (t === UNSORTED ? all.filter(isUnsorted).length : all.filter((i) => tagsOf(i).includes(t)).length);
   const types = el('<div class="groups"></div>');
-  const chip = (t) => { const b = el(`<button type="button" class="chip ${S.ptype === t ? 'on' : ''}">${esc(t || 'الكل')}</button>`); b.onclick = () => { S.ptype = t; render(); }; types.append(b); };
-  chip(null);
-  g.types.forEach(([t]) => chip(t));
+  const chip = (t, label = t) => {
+    const n = t ? count(t) : all.length;
+    const b = el(`<button type="button" class="chip ${S.ptype === t ? 'on' : ''} ${n ? '' : 'zero'}">${esc(label)} <small>${n}</small></button>`);
+    b.onclick = () => { S.ptype = t; render(); };
+    types.append(b);
+  };
+  chip(null, 'الكل');
+  if (count(UNSORTED) || S.ptype === UNSORTED) chip(UNSORTED);
+  typesOf(S.pgroup).forEach((t) => chip(t));
+  const nb = el(`<button type="button" class="chip ghost">${icon('plus')} نوع</button>`);
+  nb.onclick = async () => {
+    const name = await askName('نوع جديد', S.pgroup === 'anime' ? 'مثال: ون بيس' : 'مثال: فساتين سهرة');
+    if (!name || typesOf(S.pgroup).some((t) => normalize(t) === normalize(name))) return;
+    const ct = { ...(S.settings.customTypes || {}) };
+    ct[S.pgroup] = [...(ct[S.pgroup] || []), name];
+    await setSetting('customTypes', ct);
+    S.ptype = name; render();
+  };
+  types.append(nb);
   main.append(types);
-  let list = [...S.items.values()].filter((i) => isPrivate(i) && (i.pgroup || 'anime') === S.pgroup && (!S.ptype || i.ptype === S.ptype)).sort(newest);
-  if (S.q) list = list.filter((i) => matches(i, S.q));
+
+  const waiting = all.filter((i) => i.kind === 'image' && !analyzed(i)).length;
+  if (waiting && AI.running) main.append(el(`<p class="p-note">يجري تحليل ${waiting} صورة وتوزيعها على الأنواع تلقائياً…</p>`));
+  else if (waiting && AI.failed) main.append(el(`<p class="p-note">لم تُحلل ${waiting} صورة بعد: افتح الموقع وأنت متصل بالإنترنت مرة لتنزيل نموذج التحليل.</p>`));
+
+  let list = all.filter((i) => !S.ptype || (S.ptype === UNSORTED ? isUnsorted(i) : tagsOf(i).includes(S.ptype))).sort(newest);
+  if (S.q) list = applySearch(list);
   if (!list.length) {
-    main.append(emptyEl(S.q ? 'لا توجد نتائج' : 'لا توجد صور هنا بعد', S.q ? 'جرّب كلمة أخرى، أو ابحث عنها في Pinterest.' : 'ابحث في Pinterest، احفظ الصورة على جهازك، ثم اضغط «إضافة».', !S.q));
+    if (S.q) main.append(searchPending() ? emptyEl('جاري البحث في محتوى الصور…', '', false) : emptyEl('لا توجد نتائج', 'لا توجد صورة هنا تطابق هذا البحث.', false));
+    else if (S.ptype && all.length) main.append(emptyEl('لا توجد صور من هذا النوع', S.ptype === UNSORTED ? 'كل الصور مصنفة.' : 'افتح أي صورة واختر لها هذا النوع يدوياً، أو أضف صوراً جديدة.', false));
+    else main.append(emptyEl('لا توجد صور هنا بعد', 'ابحث في Pinterest، احفظ الصورة على جهازك، ثم اضغط «إضافة».', true));
     return;
   }
   main.append(gridEl(list), footerEl());
@@ -972,6 +1206,7 @@ async function init() {
   document.addEventListener('dragover', (e) => { if (!modals.length) e.preventDefault(); });
   document.addEventListener('drop', (e) => { if (modals.length || !e.dataTransfer?.files?.length) return; e.preventDefault(); openAdd(e.dataTransfer.files); });
   render();
+  aiKick();
 
   // العمل دون إنترنت بعد أول زيارة
   if ('serviceWorker' in navigator && window.isSecureContext) {
