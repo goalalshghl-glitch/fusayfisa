@@ -4,7 +4,7 @@
    ========================================================= */
 'use strict';
 
-const APP_VERSION = '2.4.3';
+const APP_VERSION = '2.4.4';
 const DB_NAME = 'fusayfisa';
 const DB_VERSION = 1; // نفس قاعدة البيانات السابقة حتى لا تضيع المراجع المحفوظة
 
@@ -291,6 +291,14 @@ function closeModal() {
   if (!modals.length) return Promise.resolve();
   return new Promise((r) => { waiting.push(r); history.back(); });
 }
+/* نسخة جديدة نزلت: نعيد التحميل مرة واحدة. إذا كانت نافذة مفتوحة (إضافة أو عرض صورة) ننتظر إغلاقها حتى لا يضيع شيء */
+let updatePending = false, reloading = false;
+function applyUpdate() {
+  if (reloading) return;
+  if (modals.length) { updatePending = true; return; }
+  reloading = true; updatePending = false;
+  location.reload();
+}
 window.addEventListener('popstate', () => {
   const m = modals.pop();
   if (!m) return;
@@ -298,6 +306,7 @@ window.addEventListener('popstate', () => {
   setTimeout(() => m.wrap.remove(), 220);
   if (!modals.length) document.body.classList.remove('modal-open');
   m.onClose?.();
+  if (!modals.length && updatePending) { applyUpdate(); return; }
   if (!modals.length && AI.dirty) { AI.dirty = false; render(); }
   waiting.shift()?.();
 });
@@ -1143,7 +1152,7 @@ function openAbout() {
     <p>اضغط على أي مرجع لتراه بحجم أكبر. من هناك تضيفه إلى المفضلة، أو تنسخه، أو تشاركه، أو تحذفه. وتجد كل ما أضفته إلى المفضلة في صفحة المفضلة أسفل الشاشة.</p>
     <p>اكتب في مربع البحث ليظهر لك ما يطابق الاسم أو الملاحظة فوراً. وإن لم تجد ما تريد في مكتبتك، اضغط زر Pinterest ليفتح لك نتائج البحث هناك، فتحفظ الصورة التي يحق لك حفظها على جهازك ثم تضيفها إلى فسيفساء.</p>
     <p>المجموعات اختيارية تماماً؛ أنشئ مجموعة باسم فقط، ثم أضف إليها المراجع من داخل كل مرجع. هذا <span data-how>كيف</span> تبقى مكتبتك منظمة دون أي تعقيد.</p>
-    <p>كل مراجعك محفوظة على جهازك وحده: لا حسابات، ولا خوادم، ولا رفع لأي جهة. والموقع يعمل دون إنترنت بعد فتحه أول مرة، ويُفضّل إضافته إلى الشاشة الرئيسية في الجوال ليبقى محفوظاً بشكل أفضل.</p>
+    <p>كل مراجعك محفوظة على جهازك وحده: لا حسابات، ولا تُرفع صورك لأي خادم أو جهة، وتحليلها يتم داخل جهازك. يحتاج الموقع اتصالاً بالإنترنت أول مرة فقط لتنزيل ملفات التشغيل ونموذج التحليل (~66 ميجا) والخطوط، ثم يعمل دون إنترنت، ويُفضّل إضافته إلى الشاشة الرئيسية في الجوال ليبقى محفوظاً بشكل أفضل.</p>
   </div>`);
   $('[data-how]', node).onclick = async () => {
     S.unlocked = true; S.priv = true; S.ptype = null; S.q = ''; $('#q').value = '';
@@ -1225,8 +1234,7 @@ async function init() {
   if ('serviceWorker' in navigator && window.isSecureContext) {
     // عند نزول نسخة جديدة: إعادة تحميل الصفحة مرة واحدة تلقائياً حتى لا يبقى المستخدم على نسخة قديمة
     const hadController = !!navigator.serviceWorker.controller;
-    let reloaded = false;
-    navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadController && !reloaded && !modals.length) { reloaded = true; location.reload(); } });
+    navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadController) applyUpdate(); });
     navigator.serviceWorker.register('./sw.js', { scope: './' }).then((r) => {
       r.update().catch(() => {});
       document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') r.update().catch(() => {}); });
