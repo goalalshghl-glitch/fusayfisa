@@ -4,7 +4,7 @@
    ========================================================= */
 'use strict';
 
-const APP_VERSION = '2.0.0';
+const APP_VERSION = '2.1.0';
 const DB_NAME = 'fusayfisa';
 const DB_VERSION = 1; // نفس قاعدة البيانات السابقة حتى لا تضيع المراجع المحفوظة
 
@@ -75,10 +75,62 @@ const DB = {
 const friendlyError = (e) => (e?.name === 'QuotaExceededError' ? 'مساحة الجهاز المخصصة للموقع ممتلئة. احذف بعض المراجع ثم حاول مجدداً.' : 'تعذّر الحفظ، حاول مرة أخرى.');
 
 /* ---------- الحالة ---------- */
-const S = { items: new Map(), groups: new Map(), q: '', group: null };
+const S = { items: new Map(), groups: new Map(), q: '', group: null, settings: {}, unlocked: false, priv: false, pgroup: 'anime', ptype: null };
+
+/* ---------- القسم الخاص: الأنمي والصور النسائية (بالغات فقط) ---------- */
+const PRIVATE = {
+  anime: { label: 'الأنمي', pin: 'anime', types: [
+    ['شخصيات نسائية', 'girl character'], ['شخصيات رجالية', 'boy character'], ['شخصيات رئيسية', 'main character'], ['شخصيات ثانوية', 'side character'],
+    ['شخصيات أصلية', 'original character oc'], ['تصاميم الشخصيات', 'character design sheet'], ['الملابس والأزياء', 'outfit'], ['تسريحات الشعر', 'hairstyle'],
+    ['الوجوه والتعابير', 'facial expressions'], ['الوقفات والحركات', 'pose reference'], ['الجسم كاملاً', 'full body'], ['من الخصر للأعلى', 'half body'],
+    ['البورتريه', 'portrait'], ['الخلفيات', 'background scenery'], ['المشاهد', 'scene'], ['أساليب الرسم', 'art style'], ['كلاسيكي', 'classic 90s'],
+    ['حديث', 'modern'], ['خيالي', 'fantasy art'], ['أكشن', 'action'], ['مغامرات', 'adventure'], ['رومانسي', 'romance'], ['حياة يومية', 'slice of life'],
+    ['كوميدي', 'comedy'], ['غموض', 'mystery'], ['خيال علمي', 'sci-fi'], ['فانتازيا', 'fantasy'],
+  ] },
+  women: { label: 'صور نسائية', pin: 'adult woman', adult: true, types: [
+    ['بورتريه', 'portrait photography'], ['الجسم كاملاً', 'full body photography'], ['من الخصر للأعلى', 'half body portrait'], ['زوايا مختلفة', 'camera angles'],
+    ['تصوير احترافي', 'professional photoshoot'], ['تصوير طبيعي', 'natural photography'], ['أزياء', 'fashion photography'], ['يومي', 'everyday lifestyle'],
+    ['خارجي', 'outdoor photoshoot'], ['استوديو', 'studio photoshoot'], ['فني', 'fine art portrait'], ['الملابس', 'outfit'], ['تسريحات الشعر', 'hairstyle'],
+    ['المكياج', 'makeup look'], ['الوقفات والحركات', 'pose reference'], ['الوجوه والتعابير', 'facial expression'],
+  ] },
+};
+const isPrivate = (i) => i.space === 'private' || i.sectionId === 'private';
+async function hashPass(pass, salt) {
+  const data = new TextEncoder().encode(`${salt}:${pass}`);
+  if (crypto.subtle) return [...new Uint8Array(await crypto.subtle.digest('SHA-256', data))].map((b) => b.toString(16).padStart(2, '0')).join('');
+  let h = 2166136261; for (const b of data) { h ^= b; h = Math.imul(h, 16777619) >>> 0; } return 'fnv' + h.toString(16);
+}
+async function setSetting(key, value) { S.settings[key] = value; await DB.put('settings', { key, value }); }
+async function setPassword(p) { const salt = uid(); await setSetting('privateSalt', salt); await setSetting('privateHash', await hashPass(p, salt)); }
+const checkPassword = async (p) => !!S.settings.privateHash && (await hashPass(p, S.settings.privateSalt)) === S.settings.privateHash;
+
+/* ---------- Pinterest: يفتح صفحة النتائج فقط ---------- */
+function openPinterest() {
+  const text = $('#q').value.trim();
+  let parts = [text];
+  if (S.priv) {
+    const g = PRIVATE[S.pgroup];
+    const t = g.types.find((x) => x[0] === S.ptype);
+    parts = [g.pin, t?.[1] || '', text];
+  }
+  const q = parts.filter(Boolean).join(' ').trim();
+  if (!q || (!S.priv && !text)) { toast('اكتب كلمة في البحث أولاً', 'err'); $('#q').focus(); return; }
+  if (!navigator.onLine) return toast('Pinterest يحتاج اتصالاً بالإنترنت', 'err');
+  window.open('https://www.pinterest.com/search/pins/?q=' + encodeURIComponent(q), '_blank', 'noopener');
+}
 
 async function loadAll() {
-  const [items, groups] = await Promise.all([DB.all('images'), DB.all('collections')]);
+  const [items, groups, settings, cats] = await Promise.all([DB.all('images'), DB.all('collections'), DB.all('settings'), DB.all('categories')]);
+  S.settings = {};
+  settings.forEach((r) => { S.settings[r.key] = r.value; });
+  // مراجع المساحة الخاصة من النسخة السابقة: نحدد مجموعتها ونوعها
+  const catMap = new Map(cats.map((c) => [c.id, c]));
+  items.forEach((i) => {
+    if (i.sectionId !== 'private' || i.pgroup) return;
+    const c = catMap.get(i.categoryId), root = c?.parentId ? catMap.get(c.parentId) : c;
+    i.pgroup = root && root.filters === 'anime' ? 'anime' : root ? 'women' : 'anime';
+    if (c && c.parentId) i.ptype = c.name;
+  });
   S.items = new Map(items.map((i) => [i.id, i]));
   S.groups = new Map(groups.map((g) => [g.id, g]));
 }
@@ -116,10 +168,10 @@ async function makeThumb(img) {
   if (!b || b.type !== 'image/webp') b = await toBlob(c, 'image/jpeg', 0.85);
   return b;
 }
-async function saveFile(file, name, note, groupId) {
+async function saveFile(file, name, note, groupId, extra = {}) {
   const id = uid();
   const now = Date.now();
-  const rec = { id, name: name || file.name.replace(/\.[^.]+$/, ''), notes: note, favorite: false, createdAt: now, updatedAt: now, mime: file.type || '', size: file.size, fileName: file.name, kind: 'file' };
+  const rec = { id, name: name || file.name.replace(/\.[^.]+$/, ''), notes: note, favorite: false, createdAt: now, updatedAt: now, mime: file.type || '', size: file.size, fileName: file.name, kind: 'file', ...extra };
   let thumb = null;
   if (file.type.startsWith('image/') || /\.(heic|heif)$/i.test(file.name)) {
     const img = await readImage(file);
@@ -252,6 +304,8 @@ function openAdd(initialFiles) {
     <div class="chosen" hidden></div>
     <label class="field"><span>الاسم (اختياري)</span><input class="input" name="name" maxlength="120" autocomplete="off"></label>
     <label class="field"><span>ملاحظة (اختياري)</span><textarea class="input" name="note" maxlength="2000"></textarea></label>
+    ${S.priv ? `<p class="dest">تُحفظ في: <b>${esc(PRIVATE[S.pgroup].label)}${S.ptype ? ' › ' + esc(S.ptype) : ''}</b></p>` : ''}
+    ${S.priv && PRIVATE[S.pgroup].adult ? '<label class="check"><input type="checkbox" name="adult"><span>أؤكد أن الصور لنساء بالغات (18 سنة فأكثر)</span></label>' : ''}
     <button class="btn" type="submit" disabled>حفظ</button>
   </form>`);
   const chosen = $('.chosen', node), save = $('[type=submit]', node), pick = $('.pick', node);
@@ -279,13 +333,15 @@ function openAdd(initialFiles) {
   node.onsubmit = async (e) => {
     e.preventDefault();
     if (!files.length) return;
+    if (node.elements.adult && !node.elements.adult.checked) return toast('هذا القسم للبالغات فقط: أكّد ذلك أولاً', 'err');
+    const extra = S.priv ? { space: 'private', pgroup: S.pgroup, ptype: S.ptype || null, adultConfirmed: !!node.elements.adult?.checked } : {};
     save.disabled = true;
     const name = node.elements.name.value.trim(), note = node.elements.note.value.trim();
     let ok = 0;
     for (let i = 0; i < files.length; i++) {
       save.textContent = files.length > 1 ? `جاري الحفظ ${i + 1} من ${files.length}…` : 'جاري الحفظ…';
       try {
-        await saveFile(files[i], name ? (files.length > 1 ? `${name} ${i + 1}` : name) : '', note, S.group);
+        await saveFile(files[i], name ? (files.length > 1 ? `${name} ${i + 1}` : name) : '', note, S.priv ? null : S.group, extra);
         ok++;
       } catch (err) {
         console.error(err);
@@ -297,7 +353,7 @@ function openAdd(initialFiles) {
     toast(ok > 1 ? `حُفظت ${ok} مراجع` : 'تم الحفظ', 'ok');
     keepDataSafe();
     await closeModal();
-    if (location.hash.startsWith('#/fav')) location.hash = '#/'; else render();
+    if (!S.priv && location.hash.startsWith('#/fav')) location.hash = '#/'; else render();
   };
   openModal(node, { onClose: () => urls.forEach(URL.revokeObjectURL) });
 }
@@ -351,7 +407,7 @@ async function openItem(id, list) {
   const groupsBox = $('.v-groups', node);
   const paintGroups = () => {
     groupsBox.innerHTML = '';
-    if (!S.groups.size) return;
+    if (!S.groups.size || isPrivate(item)) return;
     groupsBox.append(el('<span class="label">في مجموعة:</span>'));
     S.groups.forEach((g) => {
       const on = g.imageIds.includes(id);
@@ -464,13 +520,15 @@ function emptyEl(title, text, withAdd) {
 }
 
 function render() {
+  if (S.priv && S.unlocked) return renderPrivate();
   const fav = location.hash.startsWith('#/fav');
   const main = $('#main');
   main.innerHTML = '';
+  document.body.classList.remove('in-private');
   $$('.nav a').forEach((a) => a.classList.toggle('on', a.dataset.nav === (fav ? '/fav' : '/')));
   if (S.group && !S.groups.has(S.group)) S.group = null;
 
-  let list = [...S.items.values()];
+  let list = [...S.items.values()].filter((i) => !isPrivate(i));
   if (fav) {
     main.append(el('<h1 class="page-title">المفضلة</h1>'));
     list = list.filter((i) => i.favorite).sort((a, b) => (b.favoritedAt || b.createdAt) - (a.favoritedAt || a.createdAt));
@@ -498,7 +556,7 @@ function render() {
     main.append(bar);
     if (S.group) {
       const g = S.groups.get(S.group);
-      list = g.imageIds.map((x) => S.items.get(x)).filter(Boolean);
+      list = g.imageIds.map((x) => S.items.get(x)).filter((i) => i && !isPrivate(i));
       const gb = el(`<div class="group-bar"><span>${list.length} مرجع · أضف إليها من داخل أي مرجع</span><button class="link" type="button">حذف المجموعة</button></div>`);
       $('button', gb).onclick = async () => {
         if (!(await confirmBox(`حذف مجموعة «${g.name}»؟ المراجع نفسها لن تُحذف.`, 'حذف'))) return;
@@ -523,6 +581,91 @@ function render() {
   main.append(gridEl(list));
 }
 
+function renderPrivate() {
+  const main = $('#main');
+  main.innerHTML = '';
+  document.body.classList.add('in-private');
+  $$('.nav a').forEach((a) => a.classList.remove('on'));
+  const g = PRIVATE[S.pgroup];
+  const head = el(`<div class="p-head"><div class="seg2">${Object.entries(PRIVATE).map(([k, v]) => `<button type="button" data-g="${k}" class="${k === S.pgroup ? 'on' : ''}">${esc(v.label)}</button>`).join('')}</div>
+    <div class="p-tools"><button type="button" class="link muted" data-pass>تغيير كلمة المرور</button><button type="button" class="chip" data-exit>خروج</button></div></div>`);
+  $$('[data-g]', head).forEach((b) => { b.onclick = () => { S.pgroup = b.dataset.g; S.ptype = null; render(); }; });
+  $('[data-exit]', head).onclick = () => { S.priv = false; S.unlocked = false; S.ptype = null; render(); scrollTo(0, 0); };
+  $('[data-pass]', head).onclick = () => changePassword();
+  main.append(head);
+  if (g.adult) main.append(el('<p class="p-note">صور فوتوغرافية لنساء بالغات (18 سنة فأكثر) فقط، ومنفصلة تماماً عن الأنمي.</p>'));
+  const types = el('<div class="groups"></div>');
+  const chip = (t) => { const b = el(`<button type="button" class="chip ${S.ptype === t ? 'on' : ''}">${esc(t || 'الكل')}</button>`); b.onclick = () => { S.ptype = t; render(); }; types.append(b); };
+  chip(null);
+  g.types.forEach(([t]) => chip(t));
+  main.append(types);
+  let list = [...S.items.values()].filter((i) => isPrivate(i) && (i.pgroup || 'anime') === S.pgroup && (!S.ptype || i.ptype === S.ptype)).sort(newest);
+  if (S.q) list = list.filter((i) => matches(i, S.q));
+  if (!list.length) {
+    main.append(emptyEl(S.q ? 'لا توجد نتائج' : 'لا توجد صور هنا بعد', S.q ? 'جرّب كلمة أخرى، أو ابحث عنها في Pinterest.' : 'ابحث في Pinterest، احفظ الصورة على جهازك، ثم اضغط «إضافة».', !S.q));
+    return;
+  }
+  main.append(gridEl(list));
+}
+
+/* النقطة الخفيفة ← نص التعريف ← كلمة «كيف» ← كلمة المرور */
+function openAbout() {
+  const node = el(`<div class="sheet about"><div class="sheet-head"><h2>عن فسيفساء</h2><button class="x" type="button" data-close aria-label="إغلاق">${icon('x')}</button></div>
+    <p>فسيفساء مكتبتك الشخصية للمراجع. تجمع فيها الصور والملفات التي تحب الرجوع إليها: أفكار للرسم، صور سيارات، تصاميم، مستندات، أو أي شيء يلهمك، كل ذلك في مكان واحد مرتب وهادئ.</p>
+    <p>طريقة الاستخدام بسيطة: اضغط «إضافة»، اختر صورة أو ملفاً من جهازك، ثم اضغط «حفظ». الاسم والملاحظة اختياريان، وتستطيع كتابتهما أو تعديلهما لاحقاً من داخل المرجع نفسه، فكل تعديل يُحفظ تلقائياً.</p>
+    <p>اضغط على أي مرجع لتراه بحجم أكبر. من هناك تضيفه إلى المفضلة، أو تنسخه، أو تشاركه، أو تحذفه. وتجد كل ما أضفته إلى المفضلة في صفحة المفضلة أسفل الشاشة.</p>
+    <p>اكتب في مربع البحث ليظهر لك ما يطابق الاسم أو الملاحظة فوراً. وإن لم تجد ما تريد في مكتبتك، اضغط زر Pinterest ليفتح لك نتائج البحث هناك، فتحفظ الصورة التي يحق لك حفظها على جهازك ثم تضيفها إلى فسيفساء.</p>
+    <p>المجموعات اختيارية تماماً؛ أنشئ مجموعة باسم فقط، ثم أضف إليها المراجع من داخل كل مرجع. هذا <span data-how>كيف</span> تبقى مكتبتك منظمة دون أي تعقيد.</p>
+    <p>كل مراجعك محفوظة على جهازك وحده: لا حسابات، ولا خوادم، ولا رفع لأي جهة. والموقع يعمل دون إنترنت بعد فتحه أول مرة، ويُفضّل إضافته إلى الشاشة الرئيسية في الجوال ليبقى محفوظاً بشكل أفضل.</p>
+  </div>`);
+  $('[data-how]', node).onclick = () => openPassword();
+  openModal(node);
+}
+function openPassword() {
+  const has = !!S.settings.privateHash;
+  const node = el(`<form class="sheet" novalidate><div class="sheet-head"><h2>${has ? 'كلمة المرور' : 'أنشئ كلمة مرور'}</h2><button class="x" type="button" data-close aria-label="إغلاق">${icon('x')}</button></div>
+    <label class="field"><input class="input" type="password" name="p" placeholder="كلمة المرور" autocomplete="${has ? 'current-password' : 'new-password'}"></label>
+    ${has ? '' : '<label class="field"><input class="input" type="password" name="p2" placeholder="أعد كتابتها" autocomplete="new-password"></label>'}
+    <p class="err" hidden></p><button class="btn" type="submit">${has ? 'دخول' : 'إنشاء ودخول'}</button>
+    <p class="fine">إخفاء بسيط داخل الموقع وليس حماية أمنية؛ من يستخدم جهازك ومتصفحك قد يصل إلى بياناته.</p></form>`);
+  const err = $('.err', node);
+  const fail = (m) => { err.textContent = m; err.hidden = false; node.classList.remove('shake'); void node.offsetWidth; node.classList.add('shake'); };
+  node.onsubmit = async (e) => {
+    e.preventDefault();
+    const p = node.elements.p.value;
+    if (has) { if (!(await checkPassword(p))) return fail('كلمة المرور غير صحيحة'); }
+    else {
+      if (p.length < 4) return fail('أربعة أحرف على الأقل');
+      if (p !== node.elements.p2.value) return fail('الكلمتان غير متطابقتين');
+      await setPassword(p);
+    }
+    S.unlocked = true; S.priv = true; S.ptype = null; S.q = ''; $('#q').value = '';
+    while (modals.length) await closeModal();
+    render(); scrollTo(0, 0);
+  };
+  openModal(node);
+  setTimeout(() => node.elements.p.focus(), 250);
+}
+function changePassword() {
+  const node = el(`<form class="sheet" novalidate><div class="sheet-head"><h2>تغيير كلمة المرور</h2><button class="x" type="button" data-close aria-label="إغلاق">${icon('x')}</button></div>
+    <label class="field"><input class="input" type="password" name="old" placeholder="كلمة المرور الحالية" autocomplete="current-password"></label>
+    <label class="field"><input class="input" type="password" name="p1" placeholder="كلمة المرور الجديدة" autocomplete="new-password"></label>
+    <label class="field"><input class="input" type="password" name="p2" placeholder="أعد كتابة الجديدة" autocomplete="new-password"></label>
+    <p class="err" hidden></p><button class="btn" type="submit">حفظ</button></form>`);
+  const err = $('.err', node);
+  node.onsubmit = async (e) => {
+    e.preventDefault();
+    const f = node.elements, fail = (m) => { err.textContent = m; err.hidden = false; };
+    if (!(await checkPassword(f.old.value))) return fail('كلمة المرور الحالية غير صحيحة');
+    if (f.p1.value.length < 4) return fail('أربعة أحرف على الأقل');
+    if (f.p1.value !== f.p2.value) return fail('الكلمتان غير متطابقتين');
+    await setPassword(f.p1.value);
+    toast('تم تغيير كلمة المرور', 'ok');
+    closeModal();
+  };
+  openModal(node);
+}
+
 /* ---------- التشغيل ---------- */
 async function init() {
   try {
@@ -536,7 +679,10 @@ async function init() {
   document.addEventListener('click', (e) => { if (e.target.closest('[data-add]')) openAdd(); });
   $('#q').addEventListener('input', debounce((e) => { S.q = e.target.value; render(); }, 150));
   $('#q').addEventListener('keydown', (e) => { if (e.key === 'Enter') e.target.blur(); });
-  window.addEventListener('hashchange', render);
+  window.addEventListener('hashchange', () => { if (S.priv) { S.priv = false; S.unlocked = false; } render(); });
+  $('#dot').onclick = openAbout;
+  $('#pin').onclick = openPinterest;
+  $$('.nav a').forEach((a) => a.addEventListener('click', () => { if (S.priv && a.getAttribute('href') === location.hash) { S.priv = false; S.unlocked = false; render(); } }));
   window.addEventListener('resize', debounce(() => { if (!modals.length) render(); }, 250));
   // سحب ملفات إلى الصفحة يفتح نافذة الإضافة مباشرة (على الكمبيوتر)
   document.addEventListener('dragover', (e) => { if (!modals.length) e.preventDefault(); });
