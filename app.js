@@ -4,7 +4,7 @@
    ========================================================= */
 'use strict';
 
-const APP_VERSION = '2.6.0';
+const APP_VERSION = '2.7.0';
 const DB_NAME = 'fusayfisa';
 const DB_VERSION = 1; // نفس قاعدة البيانات السابقة حتى لا تضيع المراجع المحفوظة
 
@@ -233,6 +233,8 @@ async function updateItem(id, patch) {
   return rec;
 }
 async function deleteItem(id) {
+  const pp = S.items.get(id)?.packPath;
+  if (pp) await setSetting('packDeleted', [...new Set([...(S.settings.packDeleted || []), pp])]);
   const groups = [...S.groups.values()].filter((g) => g.imageIds.includes(id));
   await DB.batch(['images', 'files', 'thumbs', 'collections'], (st) => {
     st('images').delete(id); st('files').delete(id); st('thumbs').delete(id);
@@ -429,7 +431,7 @@ function openAdd(initialFiles) {
     <div class="sheet-head"><h2>إضافة مراجع</h2><button class="x" type="button" data-close aria-label="إغلاق">${icon('x')}</button></div>
     <label class="pick">${icon('upload')}<b>اختر صوراً أو ملفات</b><span>اختر عشرات أو مئات الصور مرة واحدة، أو ملف ZIP</span><input type="file" multiple name="f"></label>
     ${canFolder ? '<label class="folder-btn">أو اختر مجلداً كاملاً<input type="file" name="dir" webkitdirectory multiple></label>' : ''}
-    ${!S.priv && S.settings.packImported !== PACK_VERSION ? '<button type="button" class="link pack-btn" data-pack>أو أضف الصور الجاهزة: 243 سيارة و157 صورة عامة</button>' : ''}
+    ${!S.priv && S.settings.packImported !== PACK_VERSION ? `<button type="button" class="link pack-btn" data-pack ${packRunning ? 'disabled' : ''}>${packRunning ? 'مكتبة السيارات والصور العامة قيد التحميل…' : 'أكمل تحميل مكتبة السيارات والصور العامة'}</button>` : ''}
     <div class="summary" hidden></div>
     <div class="chosen" hidden></div>
     <div class="opts" hidden>
@@ -580,30 +582,45 @@ function openAdd(initialFiles) {
 /* ---------- الصور الجاهزة (بطلب المستخدم): صور حرة الترخيص من Wikimedia Commons ---------- */
 const PACK_VERSION = 1;
 const PACK_BASE = 'https://upload.wikimedia.org/wikipedia/commons/thumb/';
-async function importPack() {
-  const node = el(`<div class="sheet"><div class="sheet-head"><h2>الصور الجاهزة</h2><button class="x" type="button" data-close aria-label="إغلاق">${icon('x')}</button></div>
-    <p class="p-note">تُنزَّل الصور من Wikimedia Commons (صور حرة الترخيص) وتُحفظ في مجموعتين: «سيارات» و«عامة». الحجم التقريبي 60–80 ميجا، يُفضّل الواي فاي.</p>
-    <div class="progress"><div class="bar"><i></i></div><span>جاري التحضير…</span><button type="button" class="link" data-stop>إيقاف</button></div></div>`);
-  openModal(node);
-  const bar = $('.bar i', node), label = $('.progress span', node);
+/** تحميل الصور الجاهزة. bg=true: في الخلفية تلقائياً (شريط صغير أسفل الشاشة)، وإلا نافذة بتقدم ونتيجة */
+let packRunning = false;
+async function importPack(bg = false) {
+  if (packRunning) return;
+  packRunning = true;
   let stopped = false;
-  $('[data-stop]', node).onclick = () => { stopped = true; label.textContent = 'جاري الإيقاف…'; };
+  let node = null, bar, label;
+  const pbar = $('#packStatus');
+  if (bg) {
+    pbar.hidden = false;
+    pbar.innerHTML = '<span>جاري تحميل مكتبة السيارات والصور العامة…</span><button type="button" class="link">إيقاف</button>';
+    label = $('span', pbar);
+    $('button', pbar).onclick = async () => { stopped = true; label.textContent = 'جاري الإيقاف…'; await setSetting('packStopped', true); };
+  } else {
+    node = el(`<div class="sheet"><div class="sheet-head"><h2>الصور الجاهزة</h2><button class="x" type="button" data-close aria-label="إغلاق">${icon('x')}</button></div>
+      <p class="p-note">تُنزَّل الصور من Wikimedia Commons (صور حرة الترخيص) وتُحفظ في مجموعتين: «سيارات» و«عامة». الحجم التقريبي 60–80 ميجا، يُفضّل الواي فاي.</p>
+      <div class="progress"><div class="bar"><i></i></div><span>جاري التحضير…</span><button type="button" class="link" data-stop>إيقاف</button></div></div>`);
+    openModal(node);
+    bar = $('.bar i', node); label = $('.progress span', node);
+    $('[data-stop]', node).onclick = () => { stopped = true; label.textContent = 'جاري الإيقاف…'; };
+    await setSetting('packStopped', false);
+  }
   let pack;
   try { pack = await (await fetch('packs/starter.json', { cache: 'no-store' })).json(); }
-  catch { label.textContent = 'تعذّر تحميل القائمة. تحقق من الإنترنت.'; return; }
-  // كل عنصر: [المسار، الترخيص، المصور]. الصور المضافة سابقاً تُتخطى دون تنزيلها من جديد
+  catch { label.textContent = 'تعذّر تحميل القائمة. تحقق من الإنترنت.'; packRunning = false; if (bg) setTimeout(() => { pbar.hidden = true; }, 4000); return; }
+  // الموجود لا يُنزّل من جديد، والمحذوف بيدك لا يرجع
   const have = new Set([...S.items.values()].map((i) => i.packPath).filter(Boolean));
+  const deleted = new Set(S.settings.packDeleted || []);
   const all = Object.entries(pack.groups).flatMap(([g, rows]) => rows.map((r) => [g, ...(Array.isArray(r) ? r : [r])]));
-  const list = all.filter(([, path]) => !have.has(path));
+  const list = all.filter(([, path]) => !have.has(path) && !deleted.has(path));
   const known = new Set([...S.items.values()].map((i) => i.hash).filter(Boolean));
   const created = [];
   let saved = 0, dup = 0;
   const failed = [];
   for (let i = 0; i < list.length; i++) {
-    if (stopped) { failed.push(`أُوقف: ${list.length - i} لم تُضف (يمكنك المتابعة لاحقاً، المضاف لا يتكرر)`); break; }
+    if (stopped) break;
     const [gname, path, license, author] = list[i];
-    label.textContent = `جاري الإضافة ${i + 1} من ${list.length}…`;
-    bar.style.width = `${Math.round((i / list.length) * 100)}%`;
+    label.textContent = `${bg ? 'تحميل مكتبة السيارات والصور العامة' : 'جاري الإضافة'} ${i + 1} من ${list.length}…`;
+    if (bar) bar.style.width = `${Math.round((i / list.length) * 100)}%`;
     try {
       const res = await fetch(PACK_BASE + path);
       if (!res.ok) throw new Error(res.status);
@@ -619,19 +636,26 @@ async function importPack() {
       const page = `https://commons.wikimedia.org/wiki/File:${encodeURIComponent(file)}`;
       await saveFile(new File([blob], `${name}.jpg`, { type: blob.type }), name, '', g.id, { hash, packPath: path, source: { site: 'Wikimedia Commons', page, license: license || '', author: author || '' } });
       saved++;
+      if (bg && saved % 20 === 0 && !modals.length && !S.priv) render(); // تظهر الصور تدريجياً
     } catch (err) {
       failed.push(`صورة ${i + 1}: ${err?.name === 'QuotaExceededError' ? 'المساحة ممتلئة' : err?.message === 'not-image' ? 'الملف ليس صورة' : 'تعذّر التنزيل'}`);
       if (err?.name === 'QuotaExceededError') break;
     }
   }
-  // الزر يختفي فقط إذا اكتملت كل الصور. غير ذلك يبقى، وإعادة الضغط تكمل الناقص فقط
   if (!stopped && !failed.length) await setSetting('packImported', PACK_VERSION);
-
+  packRunning = false;
   keepDataSafe();
-  await closeModal();
-  showResult(saved, dup, failed.length > 12 ? [...failed.slice(0, 12), `و${failed.length - 12} غيرها`] : failed);
-  location.hash = '#/'; render();
-  if (failed.length) toast('لإكمال الناقص فقط: «إضافة» ثم زر الصور الجاهزة مرة أخرى', '');
+  if (bg) {
+    label.textContent = stopped ? 'أُوقف التحميل. تقدر تكمله من «إضافة».' : failed.length ? `تم تحميل ${saved}، وتعذّر ${failed.length} (يكمل تلقائياً المرة القادمة)` : `تم تحميل المكتبة: ${saved} صورة`;
+    $('button', pbar).remove();
+    setTimeout(() => { pbar.hidden = true; }, 5000);
+    if (!modals.length && !S.priv) render();
+  } else {
+    await closeModal();
+    showResult(saved, dup, failed.length > 12 ? [...failed.slice(0, 12), `و${failed.length - 12} غيرها`] : failed);
+    location.hash = '#/'; render();
+    if (failed.length) toast('لإكمال الناقص فقط: «إضافة» ثم زر الصور الجاهزة مرة أخرى', '');
+  }
   if (saved) aiKick();
 }
 
@@ -1298,6 +1322,8 @@ async function init() {
   document.addEventListener('drop', (e) => { if (modals.length || !e.dataTransfer?.files?.length) return; e.preventDefault(); openAdd(e.dataTransfer.files); });
   render();
   aiKick();
+  // مكتبة السيارات والصور العامة: تُحمّل تلقائياً مرة واحدة على كل جهاز (إلا إذا أوقفها المستخدم)
+  if (S.settings.packImported !== PACK_VERSION && !S.settings.packStopped && navigator.onLine) setTimeout(() => importPack(true), 1500);
 
   // العمل دون إنترنت بعد أول زيارة
   if ('serviceWorker' in navigator && window.isSecureContext) {
