@@ -57,7 +57,7 @@ input, textarea { caret-color: var(--primary); }
 .mark i:nth-child(3) { background: #6FA8A2; }
 .add {
   display: inline-flex; align-items: center; gap: 6px; height: 46px; padding: 0 18px 0 20px; border: 0; border-radius: 999px;
-  background: var(--primary); color: var(--on-primary); font-weight: 700; cursor: pointer; box-shadow: 0 4px 14px color-mix(in srgb, var(--primary) 30%, transparent);
+  background: var(--primary); color: var(--on-primary); font-weight: 700; cursor: pointer; box-shadow: 0 2px 8px rgba(20, 22, 23, .16);
 }
 .add .ic { width: 24px; height: 24px; stroke-width: 2.4; }
 .add:active { transform: scale(.96); }
