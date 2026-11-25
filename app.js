@@ -4,7 +4,7 @@
    ========================================================= */
 'use strict';
 
-const APP_VERSION = '2.2.0';
+const APP_VERSION = '2.3.0';
 const DB_NAME = 'fusayfisa';
 const DB_VERSION = 1; // نفس قاعدة البيانات السابقة حتى لا تضيع المراجع المحفوظة
 
@@ -136,11 +136,19 @@ async function loadAll() {
 }
 const newest = (a, b) => b.createdAt - a.createdAt;
 const noteOf = (i) => i.notes || i.description || '';
+const hayCache = new WeakMap();
+let groupNames = new Map();
+function rebuildGroupIndex() {
+  groupNames = new Map();
+  S.groups.forEach((g) => g.imageIds.forEach((id) => groupNames.set(id, (groupNames.get(id) || '') + ' ' + g.name)));
+}
 function matches(item, q) {
   const words = normalize(q).split(' ').filter(Boolean);
   if (!words.length) return true;
-  const hay = normalize(`${item.name} ${noteOf(item)} ${item.text?.body || ''}`);
-  return words.every((w) => hay.includes(w));
+  const key = groupNames.get(item.id) || '';
+  let c = hayCache.get(item);
+  if (!c || c.key !== key) { c = { key, hay: normalize(`${item.name} ${noteOf(item)} ${item.text?.body || ''} ${key}`) }; hayCache.set(item, c); }
+  return words.every((w) => c.hay.includes(w));
 }
 
 /* ---------- حفظ المراجع ---------- */
@@ -299,6 +307,7 @@ function askName(title, placeholder) {
    كل شيء يُقرأ داخل المتصفح ويُحفظ محلياً؛ لا رفع لأي جهة.
    ========================================================= */
 const MIME = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp', avif: 'image/avif', bmp: 'image/bmp', heic: 'image/heic', heif: 'image/heif', svg: 'image/svg+xml', pdf: 'application/pdf', txt: 'text/plain', mp4: 'video/mp4', mov: 'video/quicktime' };
+const fmtMB = (b) => `${(b / 1048576).toFixed(b > 104857600 ? 0 : 1)} ميجا`;
 const mimeOf = (name) => MIME[(name.split('.').pop() || '').toLowerCase()] || '';
 const skipName = (path) => /(^|\/)(__MACOSX|\.DS_Store|Thumbs\.db|desktop\.ini)(\/|$)|(^|\/)\._/i.test(path) || /\/$/.test(path);
 const parentFolder = (path) => { const parts = path.split('/').filter(Boolean); return parts.length > 1 ? parts[parts.length - 2] : ''; };
@@ -394,7 +403,7 @@ function openAdd(initialFiles) {
     </div>
     ${S.priv ? `<p class="dest">تُحفظ في: <b>${esc(PRIVATE[S.pgroup].label)}${S.ptype ? ' › ' + esc(S.ptype) : ''}</b></p>` : ''}
     ${S.priv && PRIVATE[S.pgroup].adult ? '<label class="check"><input type="checkbox" name="adult"><span>أؤكد أن الصور لنساء بالغات (18 سنة فأكثر)</span></label>' : ''}
-    <div class="progress" hidden><div class="bar"><i></i></div><span></span></div>
+    <div class="progress" hidden><div class="bar"><i></i></div><span></span><button type="button" class="link" data-stop>إيقاف الحفظ</button></div>
     <button class="btn" type="submit" disabled>حفظ</button>
   </form>`);
   const $n = (s) => $(s, node);
@@ -441,6 +450,12 @@ function openAdd(initialFiles) {
       sel.value = prev && [...sel.options].some((o) => o.value === prev) ? prev : fnames.length ? '__folder' : (S.group || '');
     }
     node.elements.name.closest('.field').hidden = ok.length > 1;
+    const need = ok.reduce((a, i) => a + (i.size || 0), 0) * 1.15;
+    navigator.storage?.estimate?.().then(({ usage = 0, quota = 0 }) => {
+      if (!quota || !summary.isConnected) return;
+      const free = quota - usage;
+      if (need > free) summary.insertAdjacentHTML('beforeend', `<span class="bad">تنبيه: المساحة المتاحة للموقع (${fmtMB(free)}) أقل من حجم هذه الصور (${fmtMB(need)}). قد يتوقف الحفظ قبل النهاية.</span>`);
+    }).catch(() => {});
     save.disabled = !ok.length;
     save.textContent = ok.length > 1 ? `حفظ ${ok.length}` : 'حفظ';
   }
@@ -484,9 +499,11 @@ function openAdd(initialFiles) {
     const name = node.elements.name.value.trim(), note = node.elements.note.value.trim(), groupSel = node.elements.group.value;
     const known = new Set([...S.items.values()].map((i) => i.hash).filter(Boolean));
     const created = [];
-    let saved = 0, dup = 0;
+    let saved = 0, dup = 0, stopped = false;
+    $('[data-stop]', prog).onclick = () => { stopped = true; label.textContent = 'جاري الإيقاف…'; };
     const failed = items.filter((i) => i.error).map((i) => `${i.name}: ${i.error}`);
     for (let i = 0; i < list.length; i++) {
+      if (stopped) { failed.push(`أُوقف الحفظ: ${list.length - i} لم تُحفظ (المحفوظ قبلها سليم)`); break; }
       const it = list[i];
       label.textContent = `جاري الحفظ ${i + 1} من ${list.length}…`;
       bar.style.width = `${Math.round((i / list.length) * 100)}%`;
@@ -522,11 +539,11 @@ function openAdd(initialFiles) {
   };
   openModal(node, { onClose: () => urls.forEach(URL.revokeObjectURL) });
 }
-function showResult(saved, dup, failed) {
+function showResult(saved, dup, failed, dupLabel = 'مكررة تم تخطيها') {
   const node = el(`<div class="sheet"><div class="sheet-head"><h2>انتهى الحفظ</h2><button class="x" type="button" data-close aria-label="إغلاق">${icon('x')}</button></div>
     <ul class="result">
       <li><b>${saved}</b> حُفظت</li>
-      ${dup ? `<li><b>${dup}</b> مكررة تم تخطيها</li>` : ''}
+      ${dup ? `<li><b>${dup}</b> ${dupLabel}</li>` : ''}
       ${failed.length ? `<li class="bad"><b>${failed.length}</b> لم تُحفظ</li>` : ''}
     </ul>
     ${failed.length ? `<details class="fails"><summary>عرض الملفات التي لم تُحفظ</summary><ul>${failed.slice(0, 200).map((f) => `<li>${esc(f)}</li>`).join('')}</ul></details>` : ''}
@@ -575,7 +592,9 @@ async function exportBackup() {
     a.href = URL.createObjectURL(zip);
     document.body.append(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+    await setSetting('lastBackup', { at: Date.now(), count: items.length });
     toast(`جُهّزت النسخة: ${items.length} مرجع`, 'ok');
+    render();
   } catch (err) { console.error(err); toast('تعذّر تجهيز النسخة الاحتياطية', 'err'); }
 }
 async function restoreBackup({ file, entries }, node) {
@@ -607,7 +626,7 @@ async function restoreBackup({ file, entries }, node) {
       await DB.put('collections', merged); S.groups.set(merged.id, merged);
     }
     await closeModal();
-    showResult(n, skipped, []);
+    showResult(n, skipped, [], 'موجودة في مكتبتك مسبقاً');
     render();
   } catch (err) {
     console.error(err);
@@ -774,7 +793,9 @@ function gridEl(list) {
   return grid;
 }
 function footerEl() {
-  const f = el(`<div class="foot"><button type="button" class="link muted">حفظ نسخة احتياطية من مكتبتك</button><span>لاسترجاعها: اضغط «إضافة» واختر ملف النسخة.</span></div>`);
+  const lb = S.settings.lastBackup;
+  const when = lb ? `آخر نسخة: ${new Date(lb.at).toLocaleDateString('ar-u-nu-latn', { day: 'numeric', month: 'long', year: 'numeric' })} (${lb.count} مرجع)` : 'لم تحفظ نسخة احتياطية بعد';
+  const f = el(`<div class="foot"><button type="button" class="link muted">حفظ نسخة احتياطية من مكتبتك</button><span>${when}</span><span>لاسترجاعها: اضغط «إضافة» واختر ملف النسخة. الاسترجاع يضيف ولا يحذف شيئاً.</span></div>`);
   $('button', f).onclick = exportBackup;
   return f;
 }
@@ -832,7 +853,7 @@ function render() {
     } else list.sort(newest);
   }
 
-  if (S.q) list = list.filter((i) => matches(i, S.q));
+  if (S.q) { rebuildGroupIndex(); list = list.filter((i) => matches(i, S.q)); }
 
   if (!list.length) {
     if (S.q) main.append(emptyEl('لا توجد نتائج', 'جرّب كلمة أخرى.', false));

@@ -243,6 +243,7 @@ body.modal-open .toasts { bottom: auto; top: calc(14px + var(--safe-t)); }
 .summary .link { justify-self: start; color: var(--muted); padding: 2px 0; }
 .chosen .more { font-weight: 700; color: var(--text); font-size: .85rem; }
 select.input { appearance: none; -webkit-appearance: none; }
+.progress [data-stop] { justify-self: start; }
 .progress { display: grid; gap: 6px; margin-bottom: 12px; font-size: .85rem; color: var(--muted); }
 .progress .bar { height: 6px; border-radius: 6px; background: var(--surface-2); overflow: hidden; }
 .progress .bar i { display: block; height: 100%; width: 0; background: var(--primary); transition: width .2s; }
