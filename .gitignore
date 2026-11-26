@@ -1,0 +1,22 @@
+# أسرار وملفات حساسة: لا تُرفع أبداً
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+secrets*.json
+service-account*.json
+# قواعد بيانات ونسخ احتياطية
+*.db
+*.sqlite
+*.sqlite3
+*.sql.gz
+*.dump
+*.bak
+backup*/
+backups/
+# ملفات النظام
+.DS_Store
+Thumbs.db
+node_modules/
