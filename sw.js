@@ -1,7 +1,7 @@
 /* فسيفساء | FUSAYFISA — Service Worker
    يخزن ملفات الواجهة لتعمل دون إنترنت. الصور نفسها محفوظة في IndexedDB وليست هنا.
    عند تعديل أي ملف من ملفات الواجهة: ارفع رقم CACHE_VERSION ليحصل المستخدمون على التحديث. */
-const CACHE_VERSION = 'v2.10.0';
+const CACHE_VERSION = 'v2.11.0';
 const SHELL_CACHE = `fusayfisa-shell-${CACHE_VERSION}`;
 const FONT_CACHE = 'fusayfisa-fonts';
 const LIB_CACHE = 'fusayfisa-ai-lib';
@@ -51,8 +51,7 @@ self.addEventListener('fetch', (event) => {
     event.respondWith((async () => {
       try {
         const res = await fetch(req);
-        const cache = await caches.open(SHELL_CACHE);
-        cache.put('./index.html', res.clone());
+        if (res.ok) { const cache = await caches.open(SHELL_CACHE); cache.put('./index.html', res.clone()); } // لا نخزن صفحة خطأ مكان الموقع
         return res;
       } catch {
         return (await caches.match('./index.html', { ignoreSearch: true })) || (await caches.match('./')) || offlineFallback();

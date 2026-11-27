@@ -14,6 +14,13 @@ const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const uid = () => (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2, 12));
 const icon = (n) => `<svg class="ic" aria-hidden="true"><use href="#i-${n}"/></svg>`;
+/** معرّف آمن (حروف وأرقام وشرطات فقط) — يمنع حقن كود عبر نسخة احتياطية معدّلة */
+const safeId = (v) => typeof v === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(v);
+const safeNum = (v, d = 1) => (Number.isFinite(+v) && +v > 0 ? +v : d);
+/** روابط خارجية: http/https فقط (لا javascript: ولا data:) */
+const safeHref = (u) => { try { const x = new URL(u); return x.protocol === 'https:' || x.protocol === 'http:' ? x.href : ''; } catch { return ''; } };
+/** أنواع ملفات آمن فتحها داخل المتصفح. غيرها (HTML/SVG/XML/سكربت) قد يشغّل كوداً بصلاحيات الموقع، فتُفتح كتنزيل فقط */
+const SAFE_OPEN = /^(image\/(jpeg|png|gif|webp|avif|bmp)|application\/pdf|text\/plain|video\/(mp4|webm|quicktime)|audio\/[a-z0-9.+-]+)$/i;
 function el(html) { const t = document.createElement('template'); t.innerHTML = html.trim(); return t.content.firstElementChild; }
 function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
 /** توحيد النص العربي للبحث (يتجاهل التشكيل والهمزات) */
@@ -719,7 +726,20 @@ async function restoreBackup({ file, entries }, node) {
   try {
     const byName = new Map(entries.map((e) => [e.name, e]));
     const data = JSON.parse(await (await zipEntryBlob(file, byName.get('fusayfisa-backup.json'))).text());
-    if (data.app !== 'fusayfisa') throw new Error('bad');
+    if (data.app !== 'fusayfisa' || !Array.isArray(data.items)) throw new Error('bad');
+    // تنقية: أي سجل معرّفه أو حقوله غير سليمة يُتجاهل (نسخة معدّلة لا تقدر تحقن كوداً)
+    const KINDS = new Set(['image', 'file', 'text']);
+    data.items = data.items.filter((r) => r && typeof r === 'object' && safeId(r.id) && KINDS.has(r.kind)).map((r) => ({
+      ...r, width: safeNum(r.width), height: safeNum(r.height), name: String(r.name ?? ''), notes: String(r.notes ?? ''),
+      mime: typeof r.mime === 'string' ? r.mime.slice(0, 100) : '', source: r.source && safeHref(r.source.page) ? r.source : undefined,
+      mtags: Array.isArray(r.mtags) ? r.mtags.map(String) : undefined, pgroupManual: safeId(r.pgroupManual) ? r.pgroupManual : undefined,
+      pgroup: safeId(r.pgroup) ? r.pgroup : undefined, emb: undefined,
+    }));
+    data.groups = (Array.isArray(data.groups) ? data.groups : []).filter((g) => g && safeId(g.id)).map((g) => ({
+      ...g, name: String(g.name ?? '').slice(0, 60), imageIds: Array.isArray(g.imageIds) ? g.imageIds.filter(safeId) : [], coverId: safeId(g.coverId) ? g.coverId : null,
+    }));
+    data.customGroups = (Array.isArray(data.customGroups) ? data.customGroups : []).filter((c) => c && safeId(c.id) && c.id !== ALL && !PRIVATE[c.id]).map((c) => ({ id: c.id, name: String(c.name ?? '').slice(0, 60) }));
+    data.customTypes = data.customTypes && typeof data.customTypes === 'object' ? Object.fromEntries(Object.entries(data.customTypes).filter(([k, v]) => safeId(k) && Array.isArray(v)).map(([k, v]) => [k, v.map((x) => String(x).slice(0, 60))])) : null;
     let n = 0, skipped = 0;
     for (let i = 0; i < data.items.length; i++) {
       const rec = data.items[i];
@@ -770,7 +790,7 @@ async function openItem(id, list) {
   let fileURL = null;
   const stored = await DB.get('files', id);
   const blob = stored?.blob || null;
-  if (blob) fileURL = URL.createObjectURL(blob);
+  if (blob) fileURL = URL.createObjectURL(item.kind === 'image' || SAFE_OPEN.test(blob.type) ? blob : new Blob([blob], { type: 'application/octet-stream' }));
 
   let media;
   if (item.kind === 'image' && fileURL) media = `<img src="${fileURL}" alt="${esc(item.name)}">`;
@@ -802,7 +822,7 @@ async function openItem(id, list) {
       </div>
       <div class="v-groups"></div>
       <div class="v-class"></div>
-      ${item.source?.page ? `<p class="v-src">المصدر: <a href="${esc(item.source.page)}" target="_blank" rel="noopener">${esc(item.source.site || 'رابط')}</a>${item.source.license ? ` · ${esc(item.source.license)}` : ''}${item.source.author ? ` · ${esc(item.source.author)}` : ''}</p>` : ''}
+      ${safeHref(item.source?.page) ? `<p class="v-src">المصدر: <a href="${esc(safeHref(item.source.page))}" target="_blank" rel="noopener">${esc(item.source.site || 'رابط')}</a>${item.source.license ? ` · ${esc(item.source.license)}` : ''}${item.source.author ? ` · ${esc(item.source.author)}` : ''}</p>` : ''}
     </div></div>`);
   $('.pv-more', node).onclick = () => openModal(panel);
   $('.pv-fav', node).onclick = () => $('[data-a=fav]', panel).click();
@@ -846,7 +866,7 @@ async function openItem(id, list) {
     const g = groupOf(cur), tags = tagsOf(cur);
     const how = Array.isArray(cur.mtags) || cur.pgroupManual ? 'مصنفة يدوياً' : analyzed(cur) ? (cur.auto?.group ? 'مصنفة تلقائياً حسب محتواها' : 'لم يتأكد التحليل من قسمها: اختر لها يدوياً') : 'لم تُحلل بعد';
     classBox.append(el(`<div class="label">التصنيف · <span class="muted">${esc(how)}</span></div>`));
-    const seg = el(`<div class="seg2 small">${Object.entries(PG()).map(([k, v]) => `<button type="button" data-g="${k}" class="${k === g ? 'on' : ''}">${esc(v.label)}</button>`).join('')}</div>`);
+    const seg = el(`<div class="seg2 small">${Object.entries(PG()).map(([k, v]) => `<button type="button" data-g="${esc(k)}" class="${k === g ? 'on' : ''}">${esc(v.label)}</button>`).join('')}</div>`);
     $$('[data-g]', seg).forEach((b) => { b.onclick = async () => {
       if (b.dataset.g === g) return;
       await updateItem(id, { pgroupManual: b.dataset.g, mtags: [] }); changed = true; paintClass();
@@ -1075,11 +1095,11 @@ const searchPending = () => S.q && S.sem?.q === S.q && S.sem.pending;
 /* ---------- الصفحات ---------- */
 function cardHTML(i) {
   let top;
-  if (i.kind === 'image') top = `<span class="ph" style="aspect-ratio:${i.width} / ${i.height}"><img data-id="${i.id}" alt="" decoding="async"></span>`;
+  if (i.kind === 'image') top = `<span class="ph" style="aspect-ratio:${safeNum(i.width)} / ${safeNum(i.height)}"><img data-id="${esc(i.id)}" alt="" decoding="async"></span>`;
   else if (i.kind === 'text') top = `<span class="textph">${esc((i.text?.body || '').slice(0, 220))}</span>`;
   else top = `<span class="fileph">${icon('file')}<small>${esc(ext(i.fileName || i.name))}</small></span>`;
   const note = noteOf(i);
-  return `<button class="card" type="button" data-id="${i.id}" aria-label="${esc(i.name)}">${top}
+  return `<button class="card" type="button" data-id="${esc(i.id)}" aria-label="${esc(i.name)}">${top}
     ${i.kind === 'image' ? '' : `<span class="name">${esc(i.name || 'بدون اسم')}</span>${note ? `<span class="note">${esc(note)}</span>` : ''}`}
     ${i.favorite ? `<span class="heart">${icon('heart')}</span>` : ''}</button>`;
 }
@@ -1192,7 +1212,7 @@ function renderPrivate() {
   $$('.nav a').forEach((a) => a.classList.remove('on'));
   if (S.pgroup !== ALL && !PG()[S.pgroup]) S.pgroup = 'anime';
   const g = PG()[S.pgroup];
-  const head = el(`<div class="p-head"><div class="seg2 tabs">${[...Object.entries(PG()), [ALL, { label: 'الكل' }]].map(([k, v]) => `<button type="button" data-g="${k}" class="${k === S.pgroup ? 'on' : ''}">${esc(v.label)}</button>`).join('')}<button type="button" data-newg aria-label="إضافة قسم">${icon('plus')}</button></div>
+  const head = el(`<div class="p-head"><div class="seg2 tabs">${[...Object.entries(PG()), [ALL, { label: 'الكل' }]].map(([k, v]) => `<button type="button" data-g="${esc(k)}" class="${k === S.pgroup ? 'on' : ''}">${esc(v.label)}</button>`).join('')}<button type="button" data-newg aria-label="إضافة قسم">${icon('plus')}</button></div>
     <div class="p-tools">${g?.custom ? '<button type="button" class="link muted" data-rename>تعديل الاسم</button><button type="button" class="link muted" data-delg>حذف القسم</button>' : ''}${S.pgroup !== ALL && S.ptype && S.ptype !== UNSORTED && typesOf(S.pgroup).includes(S.ptype) ? '<button type="button" class="link muted" data-renamet>تعديل اسم النوع</button><button type="button" class="link muted" data-delt>حذف النوع</button>' : ''}<button type="button" class="link muted" data-pass>تغيير كلمة المرور</button><button type="button" class="chip" data-exit>خروج</button></div></div>`);
   $$('[data-g]', head).forEach((b) => { b.onclick = () => { S.pgroup = b.dataset.g; S.ptype = null; render(); }; });
   $('[data-newg]', head).onclick = async () => {
