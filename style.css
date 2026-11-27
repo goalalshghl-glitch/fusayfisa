@@ -261,6 +261,11 @@ select.input { appearance: none; -webkit-appearance: none; }
 .v-class .label { font-size: .85rem; color: var(--muted); }
 .v-class .v-groups { margin-top: 0; }
 .muted { color: var(--muted); }
+.seg2.tabs { max-width: 100%; overflow-x: auto; scrollbar-width: none; }
+.seg2.tabs::-webkit-scrollbar { display: none; }
+.seg2.tabs button { flex: none; white-space: nowrap; }
+.seg2 button svg { width: 16px; height: 16px; vertical-align: -3px; }
+.seg2.small { max-width: 100%; overflow-x: auto; }
 .seg2.small button { padding: 6px 14px; font-size: .88rem; }
 .v-similar { grid-column: 1 / -1; width: min(1100px, 100%); margin: 0 auto; padding: 8px calc(16px + var(--safe-r)) calc(24px + var(--safe-b)) calc(16px + var(--safe-l)); }
 .v-similar:empty { display: none; }

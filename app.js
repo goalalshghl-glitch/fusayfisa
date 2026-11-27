@@ -96,8 +96,10 @@ const PRIVATE = {
 };
 /** «الكل» في القسم الخاص: يعرض الأنمي والصور النسائية معاً */
 const ALL = 'all';
+/** الأقسام الخاصة كلها: الأساسية + الأقسام التي أضافها المستخدم (تُحفظ على الجهاز فقط) */
+const PG = () => ({ ...PRIVATE, ...Object.fromEntries((S.settings.customGroups || []).map((c) => [c.id, { label: c.name, pin: c.name, types: [], custom: true }])) });
 /** القسم الذي تُحفظ فيه الإضافات: في «الكل» تُحفظ للأنمي مبدئياً ثم يوزعها التحليل حسب محتواها */
-const saveGroup = () => (PRIVATE[S.pgroup] ? S.pgroup : 'anime');
+const saveGroup = () => (PG()[S.pgroup] ? S.pgroup : 'anime');
 const isPrivate = (i) => i.space === 'private' || i.sectionId === 'private';
 const UNSORTED = 'غير مصنف';
 /** القسم الفعلي لصورة خاصة: اليدوي أولاً، ثم ما حدده الذكاء، ثم مكان الرفع */
@@ -111,8 +113,8 @@ const tagsOf = (i) => {
 };
 const analyzed = (i) => !!i.emb;
 /** غير مصنف: حُللت ولم يُعرف قسمها بثقة، أو ليس لها أي نوع */
-const isUnsorted = (i) => (analyzed(i) && !i.pgroupManual && !i.auto?.group) || (!tagsOf(i).length && (analyzed(i) || Array.isArray(i.mtags)));
-const typesOf = (g) => [...PRIVATE[g].types.map(([t]) => t), ...((S.settings.customTypes || {})[g] || [])];
+const isUnsorted = (i) => !PG()[groupOf(i)]?.custom && ((analyzed(i) && !i.pgroupManual && !i.auto?.group) || (!tagsOf(i).length && (analyzed(i) || Array.isArray(i.mtags))));
+const typesOf = (g) => [...(PG()[g]?.types || []).map(([t]) => t), ...((S.settings.customTypes || {})[g] || [])];
 async function hashPass(pass, salt) {
   const data = new TextEncoder().encode(`${salt}:${pass}`);
   if (crypto.subtle) return [...new Uint8Array(await crypto.subtle.digest('SHA-256', data))].map((b) => b.toString(16).padStart(2, '0')).join('');
@@ -135,7 +137,7 @@ const checkPassword = async (p) => {
 function openPinterest() {
   const text = $('#q').value.trim();
   let parts = [text];
-  const g = S.priv ? PRIVATE[S.pgroup] : null;
+  const g = S.priv ? PG()[S.pgroup] : null;
   if (g) {
     const t = g.types.find((x) => x[0] === S.ptype);
     parts = [g.pin, t?.[1] || '', text];
@@ -174,7 +176,7 @@ function rebuildGroupIndex() {
 function matches(item, q) {
   const words = normalize(q).split(' ').filter(Boolean);
   if (!words.length) return true;
-  const key = (groupNames.get(item.id) || '') + (isPrivate(item) ? ` ${PRIVATE[groupOf(item)]?.label || ''} ${tagsOf(item).join(' ')}${isUnsorted(item) ? ' ' + UNSORTED : ''}` : '');
+  const key = (groupNames.get(item.id) || '') + (isPrivate(item) ? ` ${PG()[groupOf(item)]?.label || ''} ${tagsOf(item).join(' ')}${isUnsorted(item) ? ' ' + UNSORTED : ''}` : '');
   let c = hayCache.get(item);
   if (!c || c.key !== key) { c = { key, hay: normalize(`${item.name} ${noteOf(item)} ${item.text?.body || ''} ${key}`) }; hayCache.set(item, c); }
   return words.every((w) => c.hay.includes(w));
@@ -423,7 +425,7 @@ function findOrCreateGroup(name, created) {
   created.push(g);
   return g;
 }
-const matchPrivateType = (folder) => PRIVATE[saveGroup()].types.find(([t]) => normalize(t) === normalize(folder))?.[0] || null;
+const matchPrivateType = (folder) => typesOf(saveGroup()).map((t) => [t]).find(([t]) => normalize(t) === normalize(folder))?.[0] || null;
 
 /* ---------- نافذة الإضافة: اختيار ← معاينة ← حفظ ---------- */
 function openAdd(initialFiles) {
@@ -443,8 +445,8 @@ function openAdd(initialFiles) {
       <label class="field"><span>الاسم (اختياري)</span><input class="input" name="name" maxlength="120" autocomplete="off"></label>
       <label class="field"><span>ملاحظة (اختياري)</span><textarea class="input" name="note" maxlength="2000"></textarea></label>
     </div>
-    ${S.priv ? `<p class="dest">تُحفظ في: <b>${S.pgroup === ALL ? 'القسم الخاص (تتوزع تلقائياً حسب محتواها)' : esc(PRIVATE[S.pgroup].label)}${S.ptype ? ' › ' + esc(S.ptype) : ''}</b></p>` : ''}
-    ${S.priv && (S.pgroup === ALL || PRIVATE[S.pgroup].adult) ? '<label class="check"><input type="checkbox" name="adult"><span>أؤكد أن الصور لنساء بالغات (18 سنة فأكثر)</span></label>' : ''}
+    ${S.priv ? `<p class="dest">تُحفظ في: <b>${S.pgroup === ALL ? 'القسم الخاص (تتوزع تلقائياً حسب محتواها)' : esc(PG()[S.pgroup].label)}${S.ptype ? ' › ' + esc(S.ptype) : ''}</b></p>` : ''}
+    ${S.priv && (S.pgroup === ALL || PG()[S.pgroup].adult) ? '<label class="check"><input type="checkbox" name="adult"><span>أؤكد أن الصور لنساء بالغات (18 سنة فأكثر)</span></label>' : ''}
     <div class="progress" hidden><div class="bar"><i></i></div><span></span><button type="button" class="link" data-stop>إيقاف الحفظ</button></div>
     <button class="btn" type="submit" disabled>حفظ</button>
   </form>`);
@@ -559,7 +561,7 @@ function openAdd(initialFiles) {
         let groupId = null, extra = { hash };
         if (S.priv) {
           const t = groupSel === '__folder' ? matchPrivateType(it.folder) : null;
-          extra = { ...extra, space: 'private', pgroup: saveGroup(), ptype: t || (S.ptype !== UNSORTED && S.ptype) || null, adultConfirmed: !!node.elements.adult?.checked };
+          extra = { ...extra, space: 'private', pgroup: saveGroup(), ...(PG()[saveGroup()].custom ? { pgroupManual: saveGroup() } : {}), ptype: t || (S.ptype !== UNSORTED && S.ptype) || null, adultConfirmed: !!node.elements.adult?.checked };
         } else if (groupSel === '__folder') {
           if (it.folder) groupId = findOrCreateGroup(it.folder, created).id;
         } else if (groupSel) groupId = groupSel;
@@ -705,7 +707,7 @@ async function exportBackup() {
     }
     const ids = new Set(items.map((i) => i.id));
     const groups = [...S.groups.values()].map((g) => ({ ...g, imageIds: g.imageIds.filter((x) => ids.has(x)) }));
-    await addEntry('fusayfisa-backup.json', new Blob([JSON.stringify({ app: 'fusayfisa', format: 2, exportedAt: Date.now(), items: items.map(({ emb, ...r }) => r), groups, customTypes: S.unlocked ? S.settings.customTypes || {} : {} })])); // البصمات تُعاد حسابها بعد الاسترجاع
+    await addEntry('fusayfisa-backup.json', new Blob([JSON.stringify({ app: 'fusayfisa', format: 2, exportedAt: Date.now(), items: items.map(({ emb, ...r }) => r), groups, customTypes: S.unlocked ? S.settings.customTypes || {} : {}, customGroups: S.unlocked ? S.settings.customGroups || [] : [] })])); // البصمات تُعاد حسابها بعد الاسترجاع
     const cdSize = central.reduce((a, p) => a + p.byteLength, 0);
     const end = new DataView(new ArrayBuffer(22));
     end.setUint32(0, 0x06054b50, true); end.setUint16(8, central.length / 2, true); end.setUint16(10, central.length / 2, true);
@@ -748,6 +750,11 @@ async function restoreBackup({ file, entries }, node) {
       const ct = { ...(S.settings.customTypes || {}) };
       for (const [k, v] of Object.entries(data.customTypes)) ct[k] = [...new Set([...(ct[k] || []), ...v])];
       await setSetting('customTypes', ct);
+    }
+    if (data.customGroups?.length) { // الأقسام الخاصة التي أضافها المستخدم
+      const cg = [...(S.settings.customGroups || [])];
+      for (const c of data.customGroups) if (!cg.some((x) => x.id === c.id)) cg.push(c);
+      await setSetting('customGroups', cg);
     }
     for (const g of data.groups || []) {
       const cur = S.groups.get(g.id);
@@ -849,7 +856,7 @@ async function openItem(id, list) {
     const g = groupOf(cur), tags = tagsOf(cur);
     const how = Array.isArray(cur.mtags) || cur.pgroupManual ? 'مصنفة يدوياً' : analyzed(cur) ? (cur.auto?.group ? 'مصنفة تلقائياً حسب محتواها' : 'لم يتأكد التحليل من قسمها: اختر لها يدوياً') : 'لم تُحلل بعد';
     classBox.append(el(`<div class="label">التصنيف · <span class="muted">${esc(how)}</span></div>`));
-    const seg = el(`<div class="seg2 small">${Object.entries(PRIVATE).map(([k, v]) => `<button type="button" data-g="${k}" class="${k === g ? 'on' : ''}">${esc(v.label)}</button>`).join('')}</div>`);
+    const seg = el(`<div class="seg2 small">${Object.entries(PG()).map(([k, v]) => `<button type="button" data-g="${k}" class="${k === g ? 'on' : ''}">${esc(v.label)}</button>`).join('')}</div>`);
     $$('[data-g]', seg).forEach((b) => { b.onclick = async () => {
       if (b.dataset.g === g) return;
       await updateItem(id, { pgroupManual: b.dataset.g, mtags: [] }); changed = true; paintClass();
@@ -1193,15 +1200,44 @@ function renderPrivate() {
   main.innerHTML = '';
   document.body.classList.add('in-private');
   $$('.nav a').forEach((a) => a.classList.remove('on'));
-  const g = PRIVATE[S.pgroup];
-  const head = el(`<div class="p-head"><div class="seg2">${[...Object.entries(PRIVATE), [ALL, { label: 'الكل' }]].map(([k, v]) => `<button type="button" data-g="${k}" class="${k === S.pgroup ? 'on' : ''}">${esc(v.label)}</button>`).join('')}</div>
-    <div class="p-tools"><button type="button" class="link muted" data-pass>تغيير كلمة المرور</button><button type="button" class="chip" data-exit>خروج</button></div></div>`);
+  if (S.pgroup !== ALL && !PG()[S.pgroup]) S.pgroup = 'anime';
+  const g = PG()[S.pgroup];
+  const head = el(`<div class="p-head"><div class="seg2 tabs">${[...Object.entries(PG()), [ALL, { label: 'الكل' }]].map(([k, v]) => `<button type="button" data-g="${k}" class="${k === S.pgroup ? 'on' : ''}">${esc(v.label)}</button>`).join('')}<button type="button" data-newg aria-label="إضافة قسم">${icon('plus')}</button></div>
+    <div class="p-tools">${g?.custom ? '<button type="button" class="link muted" data-rename>تعديل الاسم</button><button type="button" class="link muted" data-delg>حذف القسم</button>' : ''}<button type="button" class="link muted" data-pass>تغيير كلمة المرور</button><button type="button" class="chip" data-exit>خروج</button></div></div>`);
   $$('[data-g]', head).forEach((b) => { b.onclick = () => { S.pgroup = b.dataset.g; S.ptype = null; render(); }; });
+  $('[data-newg]', head).onclick = async () => {
+    const name = await askName('قسم جديد', 'مثال: رسومات، خلفيات، أفكار');
+    if (!name) return;
+    if (Object.values(PG()).some((v) => normalize(v.label) === normalize(name)) || normalize(name) === normalize('الكل')) return toast('يوجد قسم بهذا الاسم', 'err');
+    const id = 'c' + Date.now().toString(36);
+    await setSetting('customGroups', [...(S.settings.customGroups || []), { id, name }]);
+    S.pgroup = id; S.ptype = null; render();
+  };
+  if (g?.custom) {
+    $('[data-rename]', head).onclick = async () => {
+      const name = await askName('اسم القسم', g.label);
+      if (!name || normalize(name) === normalize(g.label)) return;
+      if (Object.values(PG()).some((v) => normalize(v.label) === normalize(name))) return toast('يوجد قسم بهذا الاسم', 'err');
+      await setSetting('customGroups', S.settings.customGroups.map((c) => (c.id === S.pgroup ? { ...c, name } : c)));
+      render();
+    };
+    $('[data-delg]', head).onclick = async () => {
+      const id = S.pgroup;
+      const inside = [...S.items.values()].filter((i) => isPrivate(i) && groupOf(i) === id);
+      if (!(await confirmBox(`حذف قسم «${g.label}»؟${inside.length ? ` صوره (${inside.length}) لن تُحذف، بل ترجع للتوزيع التلقائي بين الأنمي والصور النسائية.` : ''}`, 'حذف'))) return;
+      for (const i of inside) await updateItem(i.id, { pgroup: 'anime', pgroupManual: undefined, mtags: undefined, ptype: null });
+      const ct = { ...(S.settings.customTypes || {}) }; delete ct[id];
+      await setSetting('customTypes', ct);
+      await setSetting('customGroups', S.settings.customGroups.filter((c) => c.id !== id));
+      S.pgroup = 'anime'; S.ptype = null; render();
+    };
+  }
   $('[data-pass]', head).onclick = () => changePassword();
   $('[data-exit]', head).onclick = () => { S.priv = false; S.unlocked = false; S.ptype = null; render(); scrollTo(0, 0); };
   main.append(head);
   if (g?.adult) main.append(el('<p class="p-note">صور فوتوغرافية لنساء بالغات (18 سنة فأكثر) فقط، ومنفصلة تماماً عن الأنمي.</p>'));
-  main.append(el('<p class="p-note">تتوزع الصور تلقائياً حسب محتواها: أي رسم (أنمي، مانجا، كرتون، رسم رقمي) يذهب للأنمي، وأي صورة حقيقية (حتى الكوسبلاي) تذهب للصور النسائية. ما لم يتأكد منه التحليل يظهر في «غير مصنف»، وتعديلك اليدوي هو المعتمد دائماً.</p>'));
+  if (g?.custom) main.append(el('<p class="p-note">قسم خاص بك: كل ما تضيفه هنا يبقى فيه ولا ينقله التوزيع التلقائي. أضف له أنواعاً من زر «+ نوع».</p>'));
+  else main.append(el('<p class="p-note">تتوزع الصور تلقائياً حسب محتواها: أي رسم (أنمي، مانجا، كرتون، رسم رقمي) يذهب للأنمي، وأي صورة حقيقية (حتى الكوسبلاي) تذهب للصور النسائية. ما لم يتأكد منه التحليل يظهر في «غير مصنف»، وتعديلك اليدوي هو المعتمد دائماً.</p>'));
 
   const all = [...S.items.values()].filter((i) => isPrivate(i) && (S.pgroup === ALL || groupOf(i) === S.pgroup));
   const count = (t) => (t === UNSORTED ? all.filter(isUnsorted).length : all.filter((i) => tagsOf(i).includes(t)).length);
@@ -1214,12 +1250,12 @@ function renderPrivate() {
   };
   chip(null, 'كل الأنواع');
   if (count(UNSORTED) || S.ptype === UNSORTED) chip(UNSORTED);
-  const shown = S.pgroup === ALL ? [...new Set(Object.keys(PRIVATE).flatMap(typesOf))] : typesOf(S.pgroup);
+  const shown = S.pgroup === ALL ? [...new Set(Object.keys(PG()).flatMap(typesOf))] : typesOf(S.pgroup);
   shown.forEach((t) => chip(t));
   const nb = el(`<button type="button" class="chip ghost">${icon('plus')} نوع</button>`);
   if (S.pgroup !== ALL) types.append(nb);
   nb.onclick = async () => {
-    const name = await askName('نوع جديد', S.pgroup === 'anime' ? 'مثال: ون بيس' : 'مثال: فساتين سهرة');
+    const name = await askName('نوع جديد', S.pgroup === 'anime' ? 'مثال: ون بيس' : S.pgroup === 'women' ? 'مثال: فساتين سهرة' : 'اسم النوع');
     if (!name || typesOf(S.pgroup).some((t) => normalize(t) === normalize(name))) return;
     const ct = { ...(S.settings.customTypes || {}) };
     ct[S.pgroup] = [...(ct[S.pgroup] || []), name];
