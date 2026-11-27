@@ -94,6 +94,10 @@ const PRIVATE = {
     ['المكياج', 'makeup look'], ['الوقفات والحركات', 'pose reference'], ['الوجوه والتعابير', 'facial expression'],
   ] },
 };
+/** «الكل» في القسم الخاص: يعرض الأنمي والصور النسائية معاً */
+const ALL = 'all';
+/** القسم الذي تُحفظ فيه الإضافات: في «الكل» تُحفظ للأنمي مبدئياً ثم يوزعها التحليل حسب محتواها */
+const saveGroup = () => (PRIVATE[S.pgroup] ? S.pgroup : 'anime');
 const isPrivate = (i) => i.space === 'private' || i.sectionId === 'private';
 const UNSORTED = 'غير مصنف';
 /** القسم الفعلي لصورة خاصة: اليدوي أولاً، ثم ما حدده الذكاء، ثم مكان الرفع */
@@ -131,13 +135,13 @@ const checkPassword = async (p) => {
 function openPinterest() {
   const text = $('#q').value.trim();
   let parts = [text];
-  if (S.priv) {
-    const g = PRIVATE[S.pgroup];
+  const g = S.priv ? PRIVATE[S.pgroup] : null;
+  if (g) {
     const t = g.types.find((x) => x[0] === S.ptype);
     parts = [g.pin, t?.[1] || '', text];
   }
   const q = parts.filter(Boolean).join(' ').trim();
-  if (!q || (!S.priv && !text)) { toast('اكتب كلمة في البحث أولاً', 'err'); $('#q').focus(); return; }
+  if (!q || (!g && !text)) { toast('اكتب كلمة في البحث أولاً', 'err'); $('#q').focus(); return; }
   if (!navigator.onLine) return toast('Pinterest يحتاج اتصالاً بالإنترنت', 'err');
   window.open('https://www.pinterest.com/search/pins/?q=' + encodeURIComponent(q), '_blank', 'noopener');
 }
@@ -419,7 +423,7 @@ function findOrCreateGroup(name, created) {
   created.push(g);
   return g;
 }
-const matchPrivateType = (folder) => PRIVATE[S.pgroup].types.find(([t]) => normalize(t) === normalize(folder))?.[0] || null;
+const matchPrivateType = (folder) => PRIVATE[saveGroup()].types.find(([t]) => normalize(t) === normalize(folder))?.[0] || null;
 
 /* ---------- نافذة الإضافة: اختيار ← معاينة ← حفظ ---------- */
 function openAdd(initialFiles) {
@@ -439,8 +443,8 @@ function openAdd(initialFiles) {
       <label class="field"><span>الاسم (اختياري)</span><input class="input" name="name" maxlength="120" autocomplete="off"></label>
       <label class="field"><span>ملاحظة (اختياري)</span><textarea class="input" name="note" maxlength="2000"></textarea></label>
     </div>
-    ${S.priv ? `<p class="dest">تُحفظ في: <b>${esc(PRIVATE[S.pgroup].label)}${S.ptype ? ' › ' + esc(S.ptype) : ''}</b></p>` : ''}
-    ${S.priv && PRIVATE[S.pgroup].adult ? '<label class="check"><input type="checkbox" name="adult"><span>أؤكد أن الصور لنساء بالغات (18 سنة فأكثر)</span></label>' : ''}
+    ${S.priv ? `<p class="dest">تُحفظ في: <b>${S.pgroup === ALL ? 'القسم الخاص (تتوزع تلقائياً حسب محتواها)' : esc(PRIVATE[S.pgroup].label)}${S.ptype ? ' › ' + esc(S.ptype) : ''}</b></p>` : ''}
+    ${S.priv && (S.pgroup === ALL || PRIVATE[S.pgroup].adult) ? '<label class="check"><input type="checkbox" name="adult"><span>أؤكد أن الصور لنساء بالغات (18 سنة فأكثر)</span></label>' : ''}
     <div class="progress" hidden><div class="bar"><i></i></div><span></span><button type="button" class="link" data-stop>إيقاف الحفظ</button></div>
     <button class="btn" type="submit" disabled>حفظ</button>
   </form>`);
@@ -555,7 +559,7 @@ function openAdd(initialFiles) {
         let groupId = null, extra = { hash };
         if (S.priv) {
           const t = groupSel === '__folder' ? matchPrivateType(it.folder) : null;
-          extra = { ...extra, space: 'private', pgroup: S.pgroup, ptype: t || (S.ptype !== UNSORTED && S.ptype) || null, adultConfirmed: !!node.elements.adult?.checked };
+          extra = { ...extra, space: 'private', pgroup: saveGroup(), ptype: t || (S.ptype !== UNSORTED && S.ptype) || null, adultConfirmed: !!node.elements.adult?.checked };
         } else if (groupSel === '__folder') {
           if (it.folder) groupId = findOrCreateGroup(it.folder, created).id;
         } else if (groupSel) groupId = groupSel;
@@ -1190,16 +1194,16 @@ function renderPrivate() {
   document.body.classList.add('in-private');
   $$('.nav a').forEach((a) => a.classList.remove('on'));
   const g = PRIVATE[S.pgroup];
-  const head = el(`<div class="p-head"><div class="seg2">${Object.entries(PRIVATE).map(([k, v]) => `<button type="button" data-g="${k}" class="${k === S.pgroup ? 'on' : ''}">${esc(v.label)}</button>`).join('')}</div>
+  const head = el(`<div class="p-head"><div class="seg2">${[...Object.entries(PRIVATE), [ALL, { label: 'الكل' }]].map(([k, v]) => `<button type="button" data-g="${k}" class="${k === S.pgroup ? 'on' : ''}">${esc(v.label)}</button>`).join('')}</div>
     <div class="p-tools"><button type="button" class="link muted" data-pass>تغيير كلمة المرور</button><button type="button" class="chip" data-exit>خروج</button></div></div>`);
   $$('[data-g]', head).forEach((b) => { b.onclick = () => { S.pgroup = b.dataset.g; S.ptype = null; render(); }; });
   $('[data-pass]', head).onclick = () => changePassword();
   $('[data-exit]', head).onclick = () => { S.priv = false; S.unlocked = false; S.ptype = null; render(); scrollTo(0, 0); };
   main.append(head);
-  if (g.adult) main.append(el('<p class="p-note">صور فوتوغرافية لنساء بالغات (18 سنة فأكثر) فقط، ومنفصلة تماماً عن الأنمي.</p>'));
+  if (g?.adult) main.append(el('<p class="p-note">صور فوتوغرافية لنساء بالغات (18 سنة فأكثر) فقط، ومنفصلة تماماً عن الأنمي.</p>'));
   main.append(el('<p class="p-note">تتوزع الصور تلقائياً حسب محتواها: أي رسم (أنمي، مانجا، كرتون، رسم رقمي) يذهب للأنمي، وأي صورة حقيقية (حتى الكوسبلاي) تذهب للصور النسائية. ما لم يتأكد منه التحليل يظهر في «غير مصنف»، وتعديلك اليدوي هو المعتمد دائماً.</p>'));
 
-  const all = [...S.items.values()].filter((i) => isPrivate(i) && groupOf(i) === S.pgroup);
+  const all = [...S.items.values()].filter((i) => isPrivate(i) && (S.pgroup === ALL || groupOf(i) === S.pgroup));
   const count = (t) => (t === UNSORTED ? all.filter(isUnsorted).length : all.filter((i) => tagsOf(i).includes(t)).length);
   const types = el('<div class="groups"></div>');
   const chip = (t, label = t) => {
@@ -1208,10 +1212,12 @@ function renderPrivate() {
     b.onclick = () => { S.ptype = t; render(); };
     types.append(b);
   };
-  chip(null, 'الكل');
+  chip(null, 'كل الأنواع');
   if (count(UNSORTED) || S.ptype === UNSORTED) chip(UNSORTED);
-  typesOf(S.pgroup).forEach((t) => chip(t));
+  const shown = S.pgroup === ALL ? [...new Set(Object.keys(PRIVATE).flatMap(typesOf))] : typesOf(S.pgroup);
+  shown.forEach((t) => chip(t));
   const nb = el(`<button type="button" class="chip ghost">${icon('plus')} نوع</button>`);
+  if (S.pgroup !== ALL) types.append(nb);
   nb.onclick = async () => {
     const name = await askName('نوع جديد', S.pgroup === 'anime' ? 'مثال: ون بيس' : 'مثال: فساتين سهرة');
     if (!name || typesOf(S.pgroup).some((t) => normalize(t) === normalize(name))) return;
@@ -1220,7 +1226,6 @@ function renderPrivate() {
     await setSetting('customTypes', ct);
     S.ptype = name; render();
   };
-  types.append(nb);
   main.append(types);
 
   const waiting = all.filter((i) => i.kind === 'image' && !analyzed(i)).length;
