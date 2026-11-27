@@ -898,13 +898,17 @@ async function openItem(id, list) {
     const cur = S.items.get(id);
     if (!cur || cur.kind !== 'image') return;
     simBox.innerHTML = '<h3>مزيد من الصور</h3>';
-    if (!cur.emb) { simBox.append(el(`<p class="muted">${AI.failed ? 'لم تُحلل هذه الصورة بعد (يحتاج اتصالاً بالإنترنت لأول مرة).' : 'جاري تحليل الصورة لإيجاد المشابه لها…'}</p>`)); return; }
-    try { await aiMod(); } catch { simBox.append(el('<p class="muted">تعذّر تحميل أداة التحليل.</p>')); return; }
-    // مثل Pinterest: الأقرب شبهاً أولاً ثم الأبعد (من نفس المساحة فقط، مرتبة حسب التشابه وليست عشوائية)
-    const sim = similarTo(cur, 60, 0);
-    if (!sim.length) { simBox.append(el('<p class="muted">لا توجد صور أخرى بعد.</p>')); return; }
+    // المزيد يأتي من نفس النوع (أو المجموعة) الذي فُتحت منه الصورة، وليس من كل المكتبة
+    const scope = similarScope(cur);
+    if (cur.emb && !AI.mod) { try { await aiMod(); } catch { /* نكمل بدون ترتيب حسب الشبه */ } }
+    let sim;
+    if (cur.emb && AI.mod) sim = similarTo(cur, 60, 0, scope?.ok).map((x) => x[1]);
+    else if (scope) sim = [...S.items.values()].filter((o) => o.id !== cur.id && o.kind === 'image' && scope.ok(o)).sort(newest).slice(0, 60);
+    else { simBox.append(el(`<p class="muted">${AI.failed ? 'لم تُحلل هذه الصورة بعد (يحتاج اتصالاً بالإنترنت لأول مرة).' : 'جاري تحليل الصورة لإيجاد المشابه لها…'}</p>`)); return; }
+    if (scope) simBox.querySelector('h3').textContent = `مزيد من «${scope.label}»`;
+    if (!sim.length) { simBox.append(el(`<p class="muted">${scope ? 'لا توجد صور أخرى في هذا النوع بعد.' : 'لا توجد صور أخرى بعد.'}</p>`)); return; }
     const go = (sid) => { closeModal().then(() => openItem(sid)); };
-    simBox.append(gridEl(sim.map((x) => x[1]), go));
+    simBox.append(gridEl(sim, go));
   };
   paintSimilar();
 
@@ -1038,13 +1042,32 @@ async function aiIndex() {
 }
 const aiKick = () => setTimeout(() => aiIndex(), 300);
 
+/** نطاق «مزيد من الصور» لصورة مفتوحة:
+    - في القسم الخاص داخل نوع (مثل جورجينا أو ون بيس): صور هذا النوع فقط
+    - في «كل الأنواع»: الصور التي تشاركها نوعاً من أنواعها، وإن لم يكن لها نوع فمن نفس قسمها
+    - في مجموعة عامة: صور المجموعة فقط
+    null = بدون تقييد (المكتبة العامة كلها) */
+function similarScope(item) {
+  if (isPrivate(item)) {
+    const g = groupOf(item), tags = tagsOf(item);
+    if (S.ptype && S.ptype !== UNSORTED && tags.includes(S.ptype)) {
+      const t = S.ptype;
+      return { label: t, ok: (o) => isPrivate(o) && groupOf(o) === g && tagsOf(o).includes(t) };
+    }
+    if (tags.length) return { label: tags.join('، '), ok: (o) => isPrivate(o) && groupOf(o) === g && tagsOf(o).some((t) => tags.includes(t)) };
+    return { label: PG()[g]?.label || 'هذا القسم', ok: (o) => isPrivate(o) && groupOf(o) === g };
+  }
+  const grp = S.group && S.groups.get(S.group);
+  if (grp && grp.imageIds.includes(item.id)) { const ids = new Set(grp.imageIds); return { label: grp.name, ok: (o) => ids.has(o.id) && !isPrivate(o) }; }
+  return null;
+}
 /** أقرب الصور شبهاً لصورة معينة، من نفس المساحة فقط (العامة مع العامة، والخاصة مع الخاصة) */
-function similarTo(item, limit = 30, min = SIM_MIN) {
+function similarTo(item, limit = 30, min = SIM_MIN, ok = null) {
   if (!item.emb || !AI.mod) return [];
   const priv = isPrivate(item);
   const out = [];
   S.items.forEach((o) => {
-    if (o.id === item.id || !o.emb || isPrivate(o) !== priv) return;
+    if (o.id === item.id || !o.emb || isPrivate(o) !== priv || (ok && !ok(o))) return;
     const s = AI.mod.dot(item.emb, o.emb);
     if (s >= min) out.push([s, o]);
   });
