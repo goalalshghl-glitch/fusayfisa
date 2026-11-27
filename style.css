@@ -295,3 +295,21 @@ select.input { appearance: none; -webkit-appearance: none; }
 .pack-status { position: fixed; z-index: 26; inset-inline: 0; bottom: calc(var(--nav-h) + var(--safe-b) + 30px); margin: 0 auto; width: fit-content; max-width: calc(100% - 24px); display: flex; gap: 12px; align-items: center; padding: 8px 14px; border-radius: 999px; font-size: .8rem; background: var(--surface); color: var(--text); box-shadow: 0 4px 16px rgba(0,0,0,.14); border: 1px solid var(--border); }
 .pack-status[hidden] { display: none; }
 .pack-status .link { padding: 0; font-size: .8rem; }
+
+/* إضافة صور إلى نوع */
+.type-add { margin: -2px 0 14px; min-height: 44px; }
+.type-add .ic { width: 18px; height: 18px; }
+.picker { width: min(760px, 100%); padding-bottom: 0; }
+.pk-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 0 0 10px; min-height: 38px; }
+.pk-bar .link { margin-inline-start: auto; }
+.pk-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 6px; }
+.pk { position: relative; aspect-ratio: 1; padding: 0; border: 0; border-radius: 10px; overflow: hidden; background: var(--surface-2); cursor: pointer; }
+.pk img { width: 100%; height: 100%; object-fit: cover; opacity: 0; transition: opacity .3s, transform .15s; }
+.pk img.loaded { opacity: 1; }
+.pk .tick { position: absolute; top: 6px; inset-inline-end: 6px; width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; background: rgba(0,0,0,.35); border: 2px solid #fff; color: transparent; }
+.pk .tick .ic { width: 15px; height: 15px; }
+.pk.on { outline: 3px solid var(--primary); outline-offset: -3px; }
+.pk.on img { transform: scale(.92); }
+.pk.on .tick { background: var(--primary); border-color: var(--primary); color: var(--on-primary); }
+.pk-foot { position: sticky; bottom: 0; background: var(--surface); padding: 12px 0 calc(16px + var(--safe-b)); margin-top: 10px; }
+@media (max-width: 520px) { .pk-grid { grid-template-columns: repeat(3, 1fr); } }

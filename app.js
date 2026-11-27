@@ -1283,6 +1283,11 @@ function renderPrivate() {
     S.ptype = name; render();
   };
   main.append(types);
+  if (S.pgroup !== ALL && S.ptype && S.ptype !== UNSORTED && typesOf(S.pgroup).includes(S.ptype)) {
+    const ab = el(`<button type="button" class="btn light type-add">${icon('plus')}<span>إضافة صور إلى «${esc(S.ptype)}»</span></button>`);
+    ab.onclick = () => openTypePicker(S.pgroup, S.ptype);
+    main.append(ab);
+  }
 
   const waiting = all.filter((i) => i.kind === 'image' && !analyzed(i)).length;
   if (waiting && AI.running) main.append(el(`<p class="p-note">يجري تحليل ${waiting} صورة وتوزيعها على الأنواع تلقائياً…</p>`));
@@ -1292,11 +1297,93 @@ function renderPrivate() {
   if (S.q) list = applySearch(list);
   if (!list.length) {
     if (S.q) main.append(searchPending() ? emptyEl('جاري البحث في محتوى الصور…', '', false) : emptyEl('لا توجد نتائج', 'لا توجد صورة هنا تطابق هذا البحث.', false));
-    else if (S.ptype && all.length) main.append(emptyEl('لا توجد صور من هذا النوع', S.ptype === UNSORTED ? 'كل الصور مصنفة.' : 'افتح أي صورة واختر لها هذا النوع يدوياً، أو أضف صوراً جديدة.', false));
+    else if (S.ptype && all.length) main.append(emptyEl('لا توجد صور من هذا النوع', S.ptype === UNSORTED ? 'كل الصور مصنفة.' : 'اضغط «إضافة صور» فوق واختر من صورك صورة أو أكثر، أو أضف صوراً جديدة.', false));
     else main.append(emptyEl('لا توجد صور هنا بعد', 'ابحث في Pinterest، احفظ الصورة على جهازك، ثم اضغط «إضافة».', true));
     return;
   }
   main.append(gridEl(list), footerEl());
+}
+
+/** إضافة صور موجودة إلى نوع: اختيار صورة أو أكثر بالضغط عليها.
+    الترتيب: الأشبه بالنوع أولاً (حسب صور النوع الموجودة، ثم اسم النوع إن فهمه التحليل)، وليس عشوائياً */
+async function openTypePicker(group, type) {
+  const pool = [...S.items.values()].filter((i) => isPrivate(i) && i.kind === 'image' && groupOf(i) === group && !tagsOf(i).includes(type)).sort(newest);
+  const members = [...S.items.values()].filter((i) => isPrivate(i) && groupOf(i) === group && tagsOf(i).includes(type));
+  const sel = new Set();
+  const node = el(`<div class="sheet picker"><div class="sheet-head"><h2>إضافة إلى «${esc(type)}»</h2><button class="x" type="button" data-close aria-label="إغلاق">${icon('x')}</button></div>
+    <p class="p-note pk-how">${pool.length ? 'اضغط على الصور لاختيارها، صورة أو أكثر، ثم «إضافة».' : 'كل صور هذا القسم موجودة في هذا النوع، أو لا توجد صور بعد.'}</p>
+    <div class="pk-bar"><button type="button" class="chip" data-like hidden>الأشبه بما اخترت</button><button type="button" class="link muted" data-allsel>تحديد الكل</button></div>
+    <div class="pk-grid"></div>
+    <div class="pk-foot"><button class="btn" type="button" data-ok disabled>إضافة</button></div></div>`);
+  const grid = $('.pk-grid', node), ok = $('[data-ok]', node), like = $('[data-like]', node), allBtn = $('[data-allsel]', node), how = $('.pk-how', node);
+  if (!pool.length) { allBtn.hidden = true; ok.hidden = true; }
+  const paint = () => {
+    ok.disabled = !sel.size;
+    ok.textContent = sel.size ? `إضافة ${sel.size} ${sel.size === 1 ? 'صورة' : sel.size === 2 ? 'صورتين' : sel.size <= 10 ? 'صور' : 'صورة'}` : 'إضافة';
+    like.hidden = !sel.size || !AI.mod;
+    allBtn.textContent = sel.size === pool.length && pool.length ? 'إلغاء التحديد' : 'تحديد الكل';
+  };
+  let order = pool, shown = 0;
+  const cell = (i) => {
+    const b = el(`<button type="button" class="pk ${sel.has(i.id) ? 'on' : ''}" data-id="${i.id}" aria-pressed="${sel.has(i.id)}"><img data-id="${i.id}" alt="" decoding="async"><span class="tick">${icon('check')}</span></button>`);
+    const img = $('img', b); io ? io.observe(img) : loadThumb(img);
+    return b;
+  };
+  const more = () => { order.slice(shown, shown + 60).forEach((i) => grid.append(cell(i))); shown += 60; };
+  const draw = () => { grid.innerHTML = ''; shown = 0; more(); };
+  node.addEventListener('scroll', () => { if (shown < order.length && node.scrollTop + node.clientHeight > node.scrollHeight - 600) more(); });
+  grid.onclick = (e) => {
+    const b = e.target.closest('.pk'); if (!b) return;
+    const id = b.dataset.id, on = !sel.has(id);
+    on ? sel.add(id) : sel.delete(id);
+    b.classList.toggle('on', on); b.setAttribute('aria-pressed', on);
+    paint();
+  };
+  allBtn.onclick = () => {
+    const all = sel.size !== pool.length;
+    sel.clear(); if (all) pool.forEach((i) => sel.add(i.id));
+    $$('.pk', grid).forEach((b) => { b.classList.toggle('on', all); b.setAttribute('aria-pressed', all); });
+    paint();
+  };
+  /** ترتيب حسب الشبه: متوسط بصمات صور مرجعية (+ وصف نصي إن وُجد) */
+  const rank = (refs, textEmb) => {
+    const embs = refs.map((i) => i.emb).filter(Boolean);
+    if (textEmb) embs.push(textEmb);
+    if (!embs.length) return false;
+    const c = new Float32Array(embs[0].length);
+    embs.forEach((e) => e.forEach((v, k) => { c[k] += v; }));
+    const n = Math.hypot(...c) || 1; c.forEach((v, k) => { c[k] = v / n; });
+    const dot = (a) => { let s = 0; for (let k = 0; k < a.length; k++) s += a[k] * c[k]; return s; };
+    order = [...pool].sort((a, b) => (sel.has(b.id) - sel.has(a.id)) || ((b.emb ? dot(b.emb) : -9) - (a.emb ? dot(a.emb) : -9)));
+    draw(); return true;
+  };
+  like.onclick = () => { rank(pool.filter((i) => sel.has(i.id)).concat(members)); node.scrollTop = 0; };
+  ok.onclick = async () => {
+    ok.disabled = true;
+    for (const id of sel) {
+      const i = S.items.get(id); if (!i) continue;
+      const now = tagsOf(i);
+      await updateItem(id, { mtags: now.includes(type) ? now : [...now, type], pgroupManual: groupOf(i) });
+    }
+    const n = sel.size;
+    await closeModal();
+    S.pgroup = group; S.ptype = type; render();
+    toast(`أُضيفت ${n} ${n === 1 ? 'صورة' : n === 2 ? 'صورتين' : n <= 10 ? 'صور' : 'صورة'} إلى «${type}»`, 'ok');
+  };
+  draw(); paint();
+  openModal(node);
+  if (!pool.length) return;
+  // الترتيب الذكي: صور النوع الموجودة أولاً، وإن كان النوع جديداً فاسمه (إن كان مفهوماً للتحليل)
+  try {
+    const m = await aiMod();
+    let te = null;
+    const en = m.toEnglish(normalize(type));
+    if (en) { const e = await m.embedTexts([en, `a photo of ${en}`, `an anime illustration of ${en}`]); te = new Float32Array(e[0].length); e.forEach((x) => x.forEach((v, k) => { te[k] += v; })); }
+    if (members.some((i) => i.emb) || te) {
+      if (rank(members, te)) how.textContent = 'مرتبة: الأشبه بـ«' + type + '» أولاً. اضغط على الصور لاختيارها، صورة أو أكثر.';
+    } else how.textContent = 'النوع جديد: اختر أول الصور، ثم اضغط «الأشبه بما اخترت» لتظهر الصور المشابهة لها أولاً.';
+    paint();
+  } catch (e) { console.warn('picker rank failed', e); }
 }
 
 /* النقطة الخفيفة ← نص التعريف ← كلمة «كيف» ← كلمة المرور (الافتراضية 1231) */
