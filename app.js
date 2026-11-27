@@ -79,20 +79,9 @@ const S = { items: new Map(), groups: new Map(), q: '', group: null, settings: {
 
 /* ---------- القسم الخاص: الأنمي والصور النسائية (بالغات فقط) ---------- */
 const PRIVATE = {
-  anime: { label: 'الأنمي', pin: 'anime', types: [
-    ['شخصيات نسائية', 'girl character'], ['شخصيات رجالية', 'boy character'], ['شخصيات رئيسية', 'main character'], ['شخصيات ثانوية', 'side character'],
-    ['شخصيات أصلية', 'original character oc'], ['تصاميم الشخصيات', 'character design sheet'], ['الملابس والأزياء', 'outfit'], ['تسريحات الشعر', 'hairstyle'],
-    ['الوجوه والتعابير', 'facial expressions'], ['الوقفات والحركات', 'pose reference'], ['الجسم كاملاً', 'full body'], ['من الخصر للأعلى', 'half body'],
-    ['البورتريه', 'portrait'], ['الخلفيات', 'background scenery'], ['المشاهد', 'scene'], ['أساليب الرسم', 'art style'], ['كلاسيكي', 'classic 90s'],
-    ['حديث', 'modern'], ['خيالي', 'fantasy art'], ['أكشن', 'action'], ['مغامرات', 'adventure'], ['رومانسي', 'romance'], ['حياة يومية', 'slice of life'],
-    ['كوميدي', 'comedy'], ['غموض', 'mystery'], ['خيال علمي', 'sci-fi'], ['فانتازيا', 'fantasy'],
-  ] },
-  women: { label: 'صور نسائية', pin: 'adult woman', adult: true, types: [
-    ['بورتريه', 'portrait photography'], ['الجسم كاملاً', 'full body photography'], ['من الخصر للأعلى', 'half body portrait'], ['زوايا مختلفة', 'camera angles'],
-    ['تصوير احترافي', 'professional photoshoot'], ['تصوير طبيعي', 'natural photography'], ['أزياء', 'fashion photography'], ['يومي', 'everyday lifestyle'],
-    ['خارجي', 'outdoor photoshoot'], ['استوديو', 'studio photoshoot'], ['فني', 'fine art portrait'], ['الملابس', 'outfit'], ['تسريحات الشعر', 'hairstyle'],
-    ['المكياج', 'makeup look'], ['الوقفات والحركات', 'pose reference'], ['الوجوه والتعابير', 'facial expression'],
-  ] },
+  // الأنواع كلها يضيفها المستخدم بنفسه من زر «+ نوع» (تُحفظ في customTypes)
+  anime: { label: 'الأنمي', pin: 'anime', types: [] },
+  women: { label: 'صور نسائية', pin: 'adult woman', adult: true, types: [] },
 };
 /** «الكل» في القسم الخاص: يعرض الأنمي والصور النسائية معاً */
 const ALL = 'all';
@@ -106,14 +95,15 @@ const UNSORTED = 'غير مصنف';
 const groupOf = (i) => i.pgroupManual || i.auto?.group || i.pgroup || 'anime';
 /** أنواع الصورة: إذا عدّلها المستخدم يدوياً فهي المعتمدة، وإلا التلقائية + النوع المختار عند الرفع */
 const tagsOf = (i) => {
-  if (Array.isArray(i.mtags)) return i.mtags;
+  const ok = new Set(typesOf(groupOf(i))); // تظهر فقط الأنواع الموجودة حالياً في القسم
+  if (Array.isArray(i.mtags)) return i.mtags.filter((t) => ok.has(t));
   const t = [...(i.auto?.group === groupOf(i) ? i.auto.tags : [])];
   if (i.ptype && !t.includes(i.ptype)) t.push(i.ptype);
-  return t;
+  return t.filter((x) => ok.has(x));
 };
 const analyzed = (i) => !!i.emb;
 /** غير مصنف: حُللت ولم يُعرف قسمها بثقة، أو ليس لها أي نوع */
-const isUnsorted = (i) => !PG()[groupOf(i)]?.custom && ((analyzed(i) && !i.pgroupManual && !i.auto?.group) || (!tagsOf(i).length && (analyzed(i) || Array.isArray(i.mtags))));
+const isUnsorted = (i) => !PG()[groupOf(i)]?.custom && ((analyzed(i) && !i.pgroupManual && !i.auto?.group) || (typesOf(groupOf(i)).length > 0 && !tagsOf(i).length && (analyzed(i) || Array.isArray(i.mtags))));
 const typesOf = (g) => [...(PG()[g]?.types || []).map(([t]) => t), ...((S.settings.customTypes || {})[g] || [])];
 async function hashPass(pass, salt) {
   const data = new TextEncoder().encode(`${salt}:${pass}`);
@@ -140,7 +130,7 @@ function openPinterest() {
   const g = S.priv ? PG()[S.pgroup] : null;
   if (g) {
     const t = g.types.find((x) => x[0] === S.ptype);
-    parts = [g.pin, t?.[1] || '', text];
+    parts = [g.pin, t?.[1] || (S.ptype !== UNSORTED && S.ptype) || '', text];
   }
   const q = parts.filter(Boolean).join(' ').trim();
   if (!q || (!g && !text)) { toast('اكتب كلمة في البحث أولاً', 'err'); $('#q').focus(); return; }
@@ -1203,7 +1193,7 @@ function renderPrivate() {
   if (S.pgroup !== ALL && !PG()[S.pgroup]) S.pgroup = 'anime';
   const g = PG()[S.pgroup];
   const head = el(`<div class="p-head"><div class="seg2 tabs">${[...Object.entries(PG()), [ALL, { label: 'الكل' }]].map(([k, v]) => `<button type="button" data-g="${k}" class="${k === S.pgroup ? 'on' : ''}">${esc(v.label)}</button>`).join('')}<button type="button" data-newg aria-label="إضافة قسم">${icon('plus')}</button></div>
-    <div class="p-tools">${g?.custom ? '<button type="button" class="link muted" data-rename>تعديل الاسم</button><button type="button" class="link muted" data-delg>حذف القسم</button>' : ''}<button type="button" class="link muted" data-pass>تغيير كلمة المرور</button><button type="button" class="chip" data-exit>خروج</button></div></div>`);
+    <div class="p-tools">${g?.custom ? '<button type="button" class="link muted" data-rename>تعديل الاسم</button><button type="button" class="link muted" data-delg>حذف القسم</button>' : ''}${S.pgroup !== ALL && S.ptype && S.ptype !== UNSORTED && typesOf(S.pgroup).includes(S.ptype) ? '<button type="button" class="link muted" data-renamet>تعديل اسم النوع</button><button type="button" class="link muted" data-delt>حذف النوع</button>' : ''}<button type="button" class="link muted" data-pass>تغيير كلمة المرور</button><button type="button" class="chip" data-exit>خروج</button></div></div>`);
   $$('[data-g]', head).forEach((b) => { b.onclick = () => { S.pgroup = b.dataset.g; S.ptype = null; render(); }; });
   $('[data-newg]', head).onclick = async () => {
     const name = await askName('قسم جديد', 'مثال: رسومات، خلفيات، أفكار');
@@ -1232,12 +1222,42 @@ function renderPrivate() {
       S.pgroup = 'anime'; S.ptype = null; render();
     };
   }
+  const typeItems = () => [...S.items.values()].filter((i) => isPrivate(i) && groupOf(i) === S.pgroup);
+  if ($('[data-renamet]', head)) $('[data-renamet]', head).onclick = async () => {
+    const from = S.ptype, name = await askName('اسم النوع', from);
+    if (!name || normalize(name) === normalize(from)) return;
+    if (typesOf(S.pgroup).some((t) => normalize(t) === normalize(name))) return toast('يوجد نوع بهذا الاسم', 'err');
+    const ct = { ...(S.settings.customTypes || {}) };
+    ct[S.pgroup] = (ct[S.pgroup] || []).map((t) => (t === from ? name : t));
+    await setSetting('customTypes', ct);
+    for (const i of typeItems()) {
+      const patch = {};
+      if (Array.isArray(i.mtags) && i.mtags.includes(from)) patch.mtags = i.mtags.map((t) => (t === from ? name : t));
+      if (i.ptype === from) patch.ptype = name;
+      if (Object.keys(patch).length) await updateItem(i.id, patch);
+    }
+    S.ptype = name; render();
+  };
+  if ($('[data-delt]', head)) $('[data-delt]', head).onclick = async () => {
+    const t = S.ptype;
+    if (!(await confirmBox(`حذف نوع «${t}»؟ الصور نفسها لن تُحذف.`, 'حذف'))) return;
+    const ct = { ...(S.settings.customTypes || {}) };
+    ct[S.pgroup] = (ct[S.pgroup] || []).filter((x) => x !== t);
+    await setSetting('customTypes', ct);
+    for (const i of typeItems()) {
+      const patch = {};
+      if (Array.isArray(i.mtags) && i.mtags.includes(t)) patch.mtags = i.mtags.filter((x) => x !== t);
+      if (i.ptype === t) patch.ptype = null;
+      if (Object.keys(patch).length) await updateItem(i.id, patch);
+    }
+    S.ptype = null; render();
+  };
   $('[data-pass]', head).onclick = () => changePassword();
   $('[data-exit]', head).onclick = () => { S.priv = false; S.unlocked = false; S.ptype = null; render(); scrollTo(0, 0); };
   main.append(head);
   if (g?.adult) main.append(el('<p class="p-note">صور فوتوغرافية لنساء بالغات (18 سنة فأكثر) فقط، ومنفصلة تماماً عن الأنمي.</p>'));
   if (g?.custom) main.append(el('<p class="p-note">قسم خاص بك: كل ما تضيفه هنا يبقى فيه ولا ينقله التوزيع التلقائي. أضف له أنواعاً من زر «+ نوع».</p>'));
-  else main.append(el('<p class="p-note">تتوزع الصور تلقائياً حسب محتواها: أي رسم (أنمي، مانجا، كرتون، رسم رقمي) يذهب للأنمي، وأي صورة حقيقية (حتى الكوسبلاي) تذهب للصور النسائية. ما لم يتأكد منه التحليل يظهر في «غير مصنف»، وتعديلك اليدوي هو المعتمد دائماً.</p>'));
+  else main.append(el('<p class="p-note">تتوزع الصور تلقائياً حسب محتواها: أي رسم (أنمي، مانجا، كرتون، رسم رقمي) يذهب للأنمي، وأي صورة حقيقية (حتى الكوسبلاي) تذهب للصور النسائية. ما لم يتأكد منه التحليل يظهر في «غير مصنف»، وتعديلك اليدوي هو المعتمد دائماً. الأنواع تضيفها أنت من زر «+ نوع»، واضغط على أي نوع لتعديل اسمه أو حذفه.</p>'));
 
   const all = [...S.items.values()].filter((i) => isPrivate(i) && (S.pgroup === ALL || groupOf(i) === S.pgroup));
   const count = (t) => (t === UNSORTED ? all.filter(isUnsorted).length : all.filter((i) => tagsOf(i).includes(t)).length);
